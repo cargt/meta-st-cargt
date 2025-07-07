@@ -1,0 +1,39 @@
+From 5640152acffca14b6c9f0698c935d0205d9c9951 Mon Sep 17 00:00:00 2001
+From: Tim Carney <tim.carney@cargt.com>
+Date: Mon, 7 Jul 2025 08:56:04 -0500
+Subject: [PATCH] Fix crash during driver initialization. See
+ https://e2e.ti.com/support/wireless-connectivity/wi-fi-group/wifi/f/wi-fi-forum/1489686/cc33xx-software-cc33xx
+
+---
+ drivers/net/wireless/ti/cc33xx/main.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/net/wireless/ti/cc33xx/main.c b/drivers/net/wireless/ti/cc33xx/main.c
+index 8fc6a472f..fe564e3a5 100644
+--- a/drivers/net/wireless/ti/cc33xx/main.c
++++ b/drivers/net/wireless/ti/cc33xx/main.c
+@@ -5226,6 +5226,7 @@ static const struct ieee80211_ops cc33xx_ops = {
+ 	.prepare_multicast = cc33xx_op_prepare_multicast,
+ 	.configure_filter = cc33xx_op_configure_filter,
+ 	.tx = cc33xx_op_tx,
++    .wake_tx_queue = ieee80211_handle_wake_tx_queue,
+ 	.set_key = cc33xx_op_set_key,
+ 	.hw_scan = cc33xx_op_hw_scan,
+ 	.cancel_hw_scan = cc33xx_op_cancel_hw_scan,
+@@ -5302,6 +5303,7 @@ static const struct ieee80211_ops cc33xx_ops = {
+ 	.prepare_multicast = cc33xx_op_prepare_multicast,
+ 	.configure_filter = cc33xx_op_configure_filter,
+ 	.tx = cc33xx_op_tx,
++    .wake_tx_queue = ieee80211_handle_wake_tx_queue,
+ 	.set_key = cc33xx_op_set_key,
+ 	.hw_scan = cc33xx_op_hw_scan,
+ 	.cancel_hw_scan = cc33xx_op_cancel_hw_scan,
+@@ -6219,7 +6221,7 @@ static struct platform_driver cc33xx_driver = {
+ 	}
+ };
+ 
+-u32 cc33xx_debug_level = DEBUG_NO_DATAPATH;
++u32 cc33xx_debug_level = DEBUG_ALL;
+ 
+ module_platform_driver(cc33xx_driver);
+ 
