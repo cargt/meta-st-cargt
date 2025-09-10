@@ -1,0 +1,1041 @@
+From 8bf5b9e4918e51c7825389bead434855698b9e0f Mon Sep 17 00:00:00 2001
+From: Tim Carney <tim.carney@cargt.com>
+Date: Wed, 10 Sep 2025 10:26:46 -0500
+Subject: [PATCH] Add support for max25221 for 10in LVDS display.
+
+---
+ drivers/hwmon/Kconfig                  |   9 +
+ drivers/hwmon/Makefile                 |   1 +
+ drivers/hwmon/max25221-hwmon.c         | 156 +++++++++++++
+ drivers/mfd/Kconfig                    |   8 +
+ drivers/mfd/Makefile                   |   1 +
+ drivers/mfd/max25221-core.c            | 247 ++++++++++++++++++++
+ drivers/regulator/Kconfig              |   6 +-
+ drivers/regulator/Makefile             |   1 +
+ drivers/regulator/max25221-regulator.c | 297 +++++++++++++++++++++++++
+ include/linux/mfd/max25221.h           | 203 +++++++++++++++++
+ 10 files changed, 928 insertions(+), 1 deletion(-)
+ create mode 100644 drivers/hwmon/max25221-hwmon.c
+ create mode 100644 drivers/mfd/max25221-core.c
+ create mode 100644 drivers/regulator/max25221-regulator.c
+ create mode 100644 include/linux/mfd/max25221.h
+
+diff --git a/drivers/hwmon/Kconfig b/drivers/hwmon/Kconfig
+index a4c361b66..e656d229c 100644
+--- a/drivers/hwmon/Kconfig
++++ b/drivers/hwmon/Kconfig
+@@ -1078,6 +1078,15 @@ config SENSORS_MAX197
+ 	  This driver can also be built as a module. If so, the module
+ 	  will be called max197.
+ 
++config SENSORS_MAX25221
++	tristate "Maxim MAX25221 temperature sensor"
++	depends on I2C
++	help
++	  If you say yes here you get support for MAX25221 PMIC sensor.
++
++	  This driver can also be built as a module.  If so, the module
++	  will be called max25221_sensor.
++
+ config SENSORS_MAX31722
+ 	tristate "MAX31722 temperature sensor"
+ 	depends on SPI
+diff --git a/drivers/hwmon/Makefile b/drivers/hwmon/Makefile
+index 4ac9452b5..5f314aadd 100644
+--- a/drivers/hwmon/Makefile
++++ b/drivers/hwmon/Makefile
+@@ -140,6 +140,7 @@ obj-$(CONFIG_SENSORS_MAX127)	+= max127.o
+ obj-$(CONFIG_SENSORS_MAX16065)	+= max16065.o
+ obj-$(CONFIG_SENSORS_MAX1619)	+= max1619.o
+ obj-$(CONFIG_SENSORS_MAX1668)	+= max1668.o
++obj-$(CONFIG_SENSORS_MAX25221)  += max25221-hwmon.o
+ obj-$(CONFIG_SENSORS_MAX197)	+= max197.o
+ obj-$(CONFIG_SENSORS_MAX31722)	+= max31722.o
+ obj-$(CONFIG_SENSORS_MAX31730)	+= max31730.o
+diff --git a/drivers/hwmon/max25221-hwmon.c b/drivers/hwmon/max25221-hwmon.c
+new file mode 100644
+index 000000000..d39bee816
+--- /dev/null
++++ b/drivers/hwmon/max25221-hwmon.c
+@@ -0,0 +1,156 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * Copyright (C) 2010-2015 Freescale Semiconductor, Inc.
++ * Copyright 2019 NXP
++ */
++/*
++ * max25221.c
++ *
++ * Based on the MAX1619 driver.
++ * Copyright (C) 2003-2004 Alexey Fisher <fishor@mail.ru>
++ *                         Jean Delvare <khali@linux-fr.org>
++ *
++ * The MAX25221 is a sensor chip made by Maxim.
++ * It reports up to two temperatures (its own plus up to
++ * one external one).
++ */
++
++
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/slab.h>
++#include <linux/jiffies.h>
++#include <linux/hwmon.h>
++#include <linux/hwmon-sysfs.h>
++#include <linux/err.h>
++#include <linux/sysfs.h>
++#include <linux/platform_device.h>
++#include <linux/mfd/max25221.h>
++#include <linux/mod_devicetable.h>
++
++/*
++ * Functions declaration
++ */
++static int max25221_sensor_probe(struct platform_device *pdev);
++static int max25221_sensor_remove(struct platform_device *pdev);
++
++static const struct platform_device_id max25221_sns_id[] = {
++	{ "max25221-sns", 0},
++	{ /* sentinel */ },
++};
++MODULE_DEVICE_TABLE(platform, max25221_sns_id);
++
++/*
++ * Driver data (common to all clients)
++ */
++static struct platform_driver max25221_sensor_driver = {
++	.probe = max25221_sensor_probe,
++	.remove = max25221_sensor_remove,
++	.id_table = max25221_sns_id,
++	.driver = {
++		.name = "max25221_sensor",
++	},
++};
++
++/*
++ * Client data (each client gets its own)
++ */
++struct max25221_data {
++	struct device *hwmon_dev;
++};
++
++/*
++ * Sysfs stuff
++ */
++static ssize_t show_temp_input1(struct device *dev,
++	struct device_attribute *attr, char *buf)
++{
++	unsigned int reg_val;
++	//max25221_reg_read(REG_MAX25221_INT_TEMP, &reg_val);
++	return snprintf(buf, PAGE_SIZE, "%d\n", 25000);
++}
++
++static ssize_t show_temp_input2(struct device *dev,
++	struct device_attribute *attr, char *buf)
++{
++	unsigned int reg_val;
++	//max25221_reg_read(REG_MAX25221_EXT_TEMP, &reg_val);
++	return snprintf(buf, PAGE_SIZE, "%d\n", 25000);
++}
++
++static DEVICE_ATTR(temp1_input, S_IRUGO, show_temp_input1, NULL);
++static DEVICE_ATTR(temp2_input, S_IRUGO, show_temp_input2, NULL);
++
++static struct attribute *max25221_attributes[] = {
++	&dev_attr_temp1_input.attr,
++	&dev_attr_temp2_input.attr,
++	NULL
++};
++
++static const struct attribute_group max25221_group = {
++	.attrs = max25221_attributes,
++};
++
++/*
++ * Real code
++ */
++static int max25221_sensor_probe(struct platform_device *pdev)
++{
++	struct max25221_data *data;
++	int err;
++
++	data = kzalloc(sizeof(struct max25221_data), GFP_KERNEL);
++	if (!data) {
++		err = -ENOMEM;
++		goto exit;
++	}
++
++	/* Register sysfs hooks */
++	err = sysfs_create_group(&pdev->dev.kobj, &max25221_group);
++	if (err)
++		goto exit_free;
++
++	data->hwmon_dev = hwmon_device_register(&pdev->dev);
++	if (IS_ERR(data->hwmon_dev)) {
++		err = PTR_ERR(data->hwmon_dev);
++		goto exit_remove_files;
++	}
++
++	platform_set_drvdata(pdev, data);
++
++	return 0;
++
++exit_remove_files:
++	sysfs_remove_group(&pdev->dev.kobj, &max25221_group);
++exit_free:
++	kfree(data);
++exit:
++	return err;
++}
++
++static int max25221_sensor_remove(struct platform_device *pdev)
++{
++	struct max25221_data *data = platform_get_drvdata(pdev);
++
++	hwmon_device_unregister(data->hwmon_dev);
++	sysfs_remove_group(&pdev->dev.kobj, &max25221_group);
++
++	kfree(data);
++	return 0;
++}
++
++static int __init sensors_max25221_init(void)
++{
++	return platform_driver_register(&max25221_sensor_driver);
++}
++module_init(sensors_max25221_init);
++
++static void __exit sensors_max25221_exit(void)
++{
++	platform_driver_unregister(&max25221_sensor_driver);
++}
++module_exit(sensors_max25221_exit);
++
++MODULE_DESCRIPTION("MAX25221 sensor driver");
++MODULE_LICENSE("GPL");
++
+diff --git a/drivers/mfd/Kconfig b/drivers/mfd/Kconfig
+index d91d07bc3..5639997ad 100644
+--- a/drivers/mfd/Kconfig
++++ b/drivers/mfd/Kconfig
+@@ -808,6 +808,14 @@ config MFD_MAX14577
+ 	  additional drivers must be enabled in order to use the functionality
+ 	  of the device.
+ 
++config MFD_MAX25221
++	tristate "Maxim MAX25221 LCD PMIC core"
++	depends on I2C
++
++	help
++	  This is the MAX25221 PMIC support. It includes
++	  core support for communication with the MAX25221 chip.
++
+ config MFD_MAX77541
+ 	tristate "Analog Devices MAX77541/77540 PMIC Support"
+ 	depends on I2C=y
+diff --git a/drivers/mfd/Makefile b/drivers/mfd/Makefile
+index 52d7b594f..34ed3ffe0 100644
+--- a/drivers/mfd/Makefile
++++ b/drivers/mfd/Makefile
+@@ -157,6 +157,7 @@ obj-$(CONFIG_MFD_DA9063)	+= da9063.o
+ obj-$(CONFIG_MFD_DA9150)	+= da9150-core.o
+ 
+ obj-$(CONFIG_MFD_MAX14577)	+= max14577.o
++obj-$(CONFIG_MFD_MAX25221)	+= max25221-core.o
+ obj-$(CONFIG_MFD_MAX77541)	+= max77541.o
+ obj-$(CONFIG_MFD_MAX77620)	+= max77620.o
+ obj-$(CONFIG_MFD_MAX77650)	+= max77650.o
+diff --git a/drivers/mfd/max25221-core.c b/drivers/mfd/max25221-core.c
+new file mode 100644
+index 000000000..045478787
+--- /dev/null
++++ b/drivers/mfd/max25221-core.c
+@@ -0,0 +1,247 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * Copyright (C) 2010-2015 Freescale Semiconductor, Inc.
++ * Copyright 2019 NXP
++ */
++
++/*!
++ * @file pmic/core/max25221.c
++ * @brief This file contains MAX25221 specific PMIC code. This implementaion
++ * may differ for each PMIC chip.
++ *
++ * @ingroup PMIC_CORE
++ */
++
++/*
++ * Includes
++ */
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/slab.h>
++#include <linux/device.h>
++#include <linux/i2c.h>
++#include <linux/delay.h>
++#include <linux/err.h>
++#include <linux/uaccess.h>
++#include <linux/of.h>
++#include <linux/of_device.h>
++#include <linux/of_gpio.h>
++#include <linux/platform_device.h>
++#include <linux/regulator/machine.h>
++#include <linux/mfd/core.h>
++#include <linux/mfd/max25221.h>
++// #include <asm/mach-types.h>
++
++static int max25221_detect(struct i2c_client *client,
++			  struct i2c_board_info *info);
++struct i2c_client *max25221_client;
++static struct regulator *gpio_regulator;
++
++static struct mfd_cell max25221_devs[] = {
++	{ .name = "max25221-pmic", },
++	{ .name = "max25221-sns", },
++};
++
++static const unsigned short normal_i2c[] = {0x48, I2C_CLIENT_END};
++
++int max25221_reg_read(int reg_num, unsigned int *reg_val)
++{
++	int result;
++
++	if (max25221_client == NULL)
++		return -EINVAL;
++
++	result = i2c_smbus_read_byte_data(max25221_client, reg_num);
++	if (result < 0) {
++		dev_err(&max25221_client->dev,
++			"Unable to read MAX25221 register via I2C\n");
++		return -EINVAL;
++	}	
++
++	dev_err(&max25221_client->dev, "max25221_reg_read: 0x%02x, 0x%02x", reg_num, result);
++
++	*reg_val = result;
++	return 0;
++}
++EXPORT_SYMBOL(max25221_reg_read);
++
++int max25221_reg_write(int reg_num, const unsigned int reg_val)
++{
++	int result;
++
++	if (max25221_client == NULL)
++		return -EINVAL;
++
++	result = i2c_smbus_write_byte_data(max25221_client, reg_num, reg_val);
++	if (result < 0) {
++		dev_err(&max25221_client->dev,
++			"Unable to write MAX25221 register via I2C\n");
++		return -EINVAL;
++	}
++
++	return 0;
++}
++EXPORT_SYMBOL(max25221_reg_write);
++
++
++static struct max25221_platform_data *max25221_i2c_parse_dt_pdata(
++					struct device *dev)
++{
++	struct max25221_platform_data *pdata;
++
++	dev_err(dev, "max25221_platform_data\n");
++	pdata = devm_kzalloc(dev, sizeof(*pdata), GFP_KERNEL);
++	if (!pdata) {
++		dev_err(dev, "could not allocate memory for pdata\n");
++		return ERR_PTR(-ENOMEM);
++	}
++
++	dev_err(dev, "max25221_platform_data 2\n");
++	return pdata;
++}
++
++
++static int max25221_probe(struct i2c_client *client)
++{
++	struct max25221 *max25221;
++	struct max25221_platform_data *pdata = client->dev.platform_data;
++	struct device_node *np = client->dev.of_node;
++	int ret = 0;
++
++	if (!np)
++		return -ENODEV;
++
++	gpio_regulator = devm_regulator_get(&client->dev, "SENSOR");
++	if (!IS_ERR(gpio_regulator)) {
++		ret = regulator_enable(gpio_regulator);
++		if (ret) {
++			dev_err(&client->dev, "gpio set voltage error\n");
++			return ret;
++		}
++	}
++
++	/* Create the PMIC data structure */
++	max25221 = kzalloc(sizeof(struct max25221), GFP_KERNEL);
++	if (max25221 == NULL)
++		return -ENOMEM;
++
++	/* Initialize the PMIC data structure */
++	i2c_set_clientdata(client, max25221);
++	max25221->dev = &client->dev;
++	max25221->i2c_client = client;
++
++	max25221_client = client;
++	ret = max25221_detect(client, NULL);
++	if (ret)
++		goto err1;
++
++	if (max25221->dev->of_node) {
++		pdata = max25221_i2c_parse_dt_pdata(max25221->dev);
++		if (IS_ERR(pdata)) {
++			ret = PTR_ERR(pdata);
++			goto err2;
++		}
++	}
++	max25221->pdata = pdata;		
++
++	mfd_add_devices(max25221->dev, -1, max25221_devs,
++			ARRAY_SIZE(max25221_devs),
++			NULL, 0, NULL);
++
++
++	dev_info(&client->dev, "PMIC MAX25221 for LCD display\n");
++
++	return ret;
++err2:
++	mfd_remove_devices(max25221->dev);
++err1:
++	if (!IS_ERR(gpio_regulator))
++		regulator_disable(gpio_regulator);
++	kfree(max25221);
++
++	return ret;
++}
++
++
++static void max25221_remove(struct i2c_client *i2c)
++{
++	struct max25221 *max25221 = i2c_get_clientdata(i2c);
++
++	mfd_remove_devices(max25221->dev);
++
++	if (!IS_ERR(gpio_regulator))
++		regulator_disable(gpio_regulator);
++}
++
++/* Return 0 if detection is successful, -ENODEV otherwise */
++static int max25221_detect(struct i2c_client *client,
++			  struct i2c_board_info *info)
++{
++	struct i2c_adapter *adapter = client->adapter;
++	s32 chip_id;
++
++	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA))
++		return -ENODEV;
++
++	/* detection */
++	chip_id = i2c_smbus_read_byte_data(client,REG_MAX25221_DEVICE);
++	if ( chip_id != 0x20 && chip_id != 0x21) {
++		dev_err(&adapter->dev,
++			"Max25221 PMIC not found! chip_id=%d\n",chip_id);
++		return -ENODEV;
++	}
++
++	if (info)
++		strlcpy(info->type, "max25221_sensor", I2C_NAME_SIZE);
++
++	return 0;
++}
++
++static const struct i2c_device_id max25221_id[] = {
++       { "max25221", 0 },
++       { }
++};
++MODULE_DEVICE_TABLE(i2c, max25221_id);
++
++static const struct of_device_id max25221_dt_ids[] = {
++	{
++		.compatible = "maxim,max25221",
++		.data = (void *) &max25221_id[0],
++	}, {
++		/* sentinel */
++	}
++};
++MODULE_DEVICE_TABLE(of, max25221_dt_ids);
++
++
++static struct i2c_driver max25221_driver = {
++	.driver = {
++		   .name = "max25221",
++		   .owner = THIS_MODULE,
++		   .of_match_table = max25221_dt_ids,
++	},
++	.probe = max25221_probe,
++	.remove = max25221_remove,
++	.id_table = max25221_id,
++	.detect = max25221_detect,
++	.address_list = &normal_i2c[0],
++};
++
++static int __init max25221_init(void)
++{
++	return i2c_add_driver(&max25221_driver);
++}
++
++static void __exit max25221_exit(void)
++{
++	i2c_del_driver(&max25221_driver);
++}
++
++/*
++ * Module entry points
++ */
++subsys_initcall(max25221_init);
++module_exit(max25221_exit);
++MODULE_DESCRIPTION("MAX25221 PMIC driver");
++MODULE_LICENSE("GPL");
+diff --git a/drivers/regulator/Kconfig b/drivers/regulator/Kconfig
+index 9614cc083..7cc8ef4d2 100644
+--- a/drivers/regulator/Kconfig
++++ b/drivers/regulator/Kconfig
+@@ -564,7 +564,11 @@ config REGULATOR_MAX1586
+ 	  This driver controls a Maxim 1586 or 1587 voltage output
+ 	  regulator via I2C bus. The provided regulator is suitable
+ 	  for PXA27x chips to control VCC_CORE and VCC_USIM voltages.
+-
++ 
++config REGULATOR_MAX25221
++	tristate "Maxim MAX25221 Regulator Support"
++	depends on MFD_MAX25221
++	
+ config REGULATOR_MAX5970
+ 	tristate "Maxim 5970/5978 power switch and monitor"
+ 	depends on I2C
+diff --git a/drivers/regulator/Makefile b/drivers/regulator/Makefile
+index ac9ac2d8c..b2f78ccfb 100644
+--- a/drivers/regulator/Makefile
++++ b/drivers/regulator/Makefile
+@@ -69,6 +69,7 @@ obj-$(CONFIG_REGULATOR_LTC3589) += ltc3589.o
+ obj-$(CONFIG_REGULATOR_LTC3676) += ltc3676.o
+ obj-$(CONFIG_REGULATOR_MAX14577) += max14577-regulator.o
+ obj-$(CONFIG_REGULATOR_MAX1586) += max1586.o
++obj-$(CONFIG_REGULATOR_MAX25221) += max25221-regulator.o
+ obj-$(CONFIG_REGULATOR_MAX5970) += max5970-regulator.o
+ obj-$(CONFIG_REGULATOR_MAX77541) += max77541-regulator.o
+ obj-$(CONFIG_REGULATOR_MAX77620) += max77620-regulator.o
+diff --git a/drivers/regulator/max25221-regulator.c b/drivers/regulator/max25221-regulator.c
+new file mode 100644
+index 000000000..41f99f7f3
+--- /dev/null
++++ b/drivers/regulator/max25221-regulator.c
+@@ -0,0 +1,297 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * Copyright (C) 2010-2015 Freescale Semiconductor, Inc. All Rights Reserved.
++ * Copyright 2019 NXP
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/slab.h>
++#include <linux/i2c.h>
++#include <linux/mutex.h>
++#include <linux/delay.h>
++#include <linux/err.h>
++#include <linux/platform_device.h>
++#include <linux/regulator/machine.h>
++#include <linux/regulator/driver.h>
++#include <linux/regulator/of_regulator.h>
++#include <linux/mfd/max25221.h>
++#include <linux/gpio.h>
++#include <linux/of_gpio.h>
++
++
++struct max25221_data {
++	int num_regulators;
++	struct max25221 *max25221;
++	struct regulator_dev **rdev;
++};
++
++
++static int max25221_display_enable(struct regulator_dev *reg)
++{
++	unsigned int reg_val;
++	struct max25221 *max25221 = rdev_get_drvdata(reg);
++
++	dev_err(max25221->dev, "max25221_display_enable\n");
++	max25221_reg_read(REG_MAX25221_FAULT1, &reg_val);	//read fault regs to clear
++	max25221_reg_read(REG_MAX25221_FAULT2, &reg_val);
++
++	max25221_reg_write(REG_MAX25221_REG_CTRL, 0);	//diable display to change values
++	mdelay(25);
++	max25221_reg_read(REG_MAX25221_FAULT1, &reg_val);
++	max25221_reg_read(REG_MAX25221_FAULT2, &reg_val);
++	
++	max25221_reg_write(REG_MAX25221_CONFIG, 		0x07);	//
++	max25221_reg_write(REG_MAX25221_DELAY_VCOM_LSB, 0xa9);	//vcom bit 1
++	max25221_reg_write(REG_MAX25221_VCOM25, 		0x86);	//vcom top (-1.5 to -0.5) -0.65V
++	max25221_reg_write(REG_MAX25221_AVDD_SET, 		0x0d);	//avdd (4.5 to 6.0)	5.5V	
++	max25221_reg_write(REG_MAX25221_VGON, 			0x74);	//vgon (16 to 20) 18.0V	
++	max25221_reg_write(REG_MAX25221_VGOFF, 			0x16);	//vgoff (-11 to -8) -10V
++
++	max25221_reg_write(REG_MAX25221_REG_CTRL, 0x40);	//enable display
++
++	mdelay(250);
++	max25221_reg_read(REG_MAX25221_FAULT1, &reg_val);
++	max25221_reg_read(REG_MAX25221_FAULT2, &reg_val);
++	mdelay(250);
++	max25221_reg_read(REG_MAX25221_FAULT1, &reg_val);
++	max25221_reg_read(REG_MAX25221_FAULT2, &reg_val);
++	mdelay(250);
++	max25221_reg_read(REG_MAX25221_FAULT1, &reg_val);
++	max25221_reg_read(REG_MAX25221_FAULT2, &reg_val);
++	
++	return true;
++}
++
++static int max25221_display_disable(struct regulator_dev *reg)
++{
++	struct max25221 *max25221 = rdev_get_drvdata(reg);
++
++	dev_err(max25221->dev, "max25221_display_disable\n");
++	max25221_reg_write(REG_MAX25221_REG_CTRL, 0);
++
++	return 0;
++}
++
++static int max25221_display_is_enabled(struct regulator_dev *reg)
++{
++	struct max25221 *max25221 = rdev_get_drvdata(reg);
++	int gpio = gpio_get_value(max25221->gpio_pmic_enable);
++
++	if (gpio == 0)
++		return 0;
++	else
++		return 1;
++}
++
++/*
++ * Regulator operations
++ */
++
++static struct regulator_ops max25221_display_ops = {
++	.enable = max25221_display_enable,
++	.disable = max25221_display_disable,
++	.is_enabled = max25221_display_is_enabled,
++};
++
++
++
++
++/*
++ * Regulator descriptors
++ */
++static struct regulator_desc max25221_reg[MAX25221_NUM_REGULATORS] = {
++{
++	.name = "DISPLAY",
++	.id = MAX25221_DISPLAY,
++	.ops = &max25221_display_ops,
++	.type = REGULATOR_VOLTAGE,
++	.owner = THIS_MODULE,
++},
++
++};
++
++
++#define CHECK_PROPERTY_ERROR_KFREE(prop) \
++do { \
++	int ret = of_property_read_u32(max25221->dev->of_node, \
++					#prop, &max25221->prop); \
++	if (ret < 0) { \
++		return ret;	\
++	}	\
++} while (0);
++
++static int max25221_pmic_dt_parse_pdata(struct platform_device *pdev,
++					struct max25221_platform_data *pdata)
++{
++	struct max25221 *max25221 = dev_get_drvdata(pdev->dev.parent);
++	struct device_node *pmic_np, *regulators_np, *reg_np;
++	struct max25221_regulator_data *rdata;
++	int i, ret;
++
++	pmic_np = of_node_get(max25221->dev->of_node);
++	if (!pmic_np) {
++		dev_err(&pdev->dev, "could not find pmic sub-node\n");
++		return -ENODEV;
++	}
++
++	regulators_np = of_find_node_by_name(pmic_np, "regulators");
++	if (!regulators_np) {
++		dev_err(&pdev->dev, "could not find regulators sub-node\n");
++		return -EINVAL;
++	}
++
++	pdata->num_regulators = of_get_child_count(regulators_np);
++	dev_err(&pdev->dev, "num_regulators %d\n", pdata->num_regulators);
++
++	rdata = devm_kzalloc(&pdev->dev, sizeof(*rdata) *
++				pdata->num_regulators, GFP_KERNEL);
++	if (!rdata) {
++		of_node_put(regulators_np);
++		dev_err(&pdev->dev, "could not allocate memory for"
++			"regulator data\n");
++		return -ENOMEM;
++	}
++
++	pdata->regulators = rdata;
++	for_each_child_of_node(regulators_np, reg_np) {
++		for (i = 0; i < ARRAY_SIZE(max25221_reg); i++)
++			if (!of_node_cmp(reg_np->name, max25221_reg[i].name))
++				break;
++
++		if (i == ARRAY_SIZE(max25221_reg)) {
++			dev_err(&pdev->dev, "don't know how to configure"
++				"regulator %s\n", reg_np->name);
++			continue;
++		}
++
++		rdata->id = i;
++		rdata->initdata = of_get_regulator_init_data(&pdev->dev,
++							     reg_np,
++							     &max25221_reg[i]);
++		rdata->reg_node = reg_np;
++		rdata++;
++	}
++	of_node_put(regulators_np);
++
++err:
++	return 0;
++
++}
++
++/*
++ * Regulator init/probing/exit functions
++ */
++static int max25221_regulator_probe(struct platform_device *pdev)
++{
++	struct max25221 *max25221 = dev_get_drvdata(pdev->dev.parent);
++	struct max25221_platform_data *pdata = max25221->pdata;
++	struct max25221_data *priv;
++	struct regulator_dev **rdev;
++	struct regulator_config config = { };
++	int size, i, ret = 0;
++
++	dev_err(&pdev->dev, "max25221_regulator_probe\n");
++
++
++	if (max25221->dev->of_node) {
++		ret = max25221_pmic_dt_parse_pdata(pdev, pdata);
++		if (ret)
++			return ret;
++	}
++
++	priv = devm_kzalloc(&pdev->dev, sizeof(struct max25221_data),
++			       GFP_KERNEL);
++	if (!priv)
++		return -ENOMEM;
++
++	size = sizeof(struct regulator_dev *) * pdata->num_regulators;
++	priv->rdev = devm_kzalloc(&pdev->dev, size, GFP_KERNEL);
++	if (!priv->rdev)
++		return -ENOMEM;
++
++	dev_err(&pdev->dev, "max25221_regulator_probe: num_of_reg %d\n", pdata->num_regulators);		
++
++	rdev = priv->rdev;
++	priv->num_regulators = pdata->num_regulators;
++	platform_set_drvdata(pdev, priv);
++
++	for (i = 0; i < pdata->num_regulators; i++) {
++		int id = pdata->regulators[i].id;
++
++		config.dev = max25221->dev;
++		config.init_data = pdata->regulators[i].initdata;
++		config.driver_data = max25221;
++		config.of_node = pdata->regulators[i].reg_node;
++
++		rdev[i] = regulator_register(config.dev, &max25221_reg[id], &config);
++		if (IS_ERR(rdev[i])) {
++			ret = PTR_ERR(rdev[i]);
++			dev_err(&pdev->dev, "regulator init failed for %d\n",
++					id);
++			rdev[i] = NULL;
++			goto err;
++		}
++	}
++
++	return 0;
++err:
++	while (--i >= 0)
++		regulator_unregister(rdev[i]);
++	return ret;
++}
++
++static int max25221_regulator_remove(struct platform_device *pdev)
++{
++	struct max25221_data *priv = platform_get_drvdata(pdev);
++	struct regulator_dev **rdev = priv->rdev;
++	int i;
++
++	for (i = 0; i < priv->num_regulators; i++)
++		regulator_unregister(rdev[i]);
++	return 0;
++}
++
++static const struct platform_device_id max25221_pmic_id[] = {
++	{ "max25221-pmic", 0},
++	{ /* sentinel */ },
++};
++MODULE_DEVICE_TABLE(platform, max25221_pmic_id);
++
++static struct platform_driver max25221_regulator_driver = {
++	.probe = max25221_regulator_probe,
++	.remove = max25221_regulator_remove,
++	.id_table = max25221_pmic_id,
++	.driver = {
++		.name = "max25221-pmic",
++	},
++};
++
++static int __init max25221_regulator_init(void)
++{
++	return platform_driver_register(&max25221_regulator_driver);
++}
++subsys_initcall_sync(max25221_regulator_init);
++
++static void __exit max25221_regulator_exit(void)
++{
++	platform_driver_unregister(&max25221_regulator_driver);
++}
++module_exit(max25221_regulator_exit);
++
++/*
++ * Parse user specified options (`max25221:')
++ * example:
++ *   max25221:pass=2,vcom=-1250000
++ */
++static int __init max25221_setup(char *options)
++{
++	return 1;
++}
++
++__setup("max25221:", max25221_setup);
++
++/* Module information */
++MODULE_DESCRIPTION("MAX25221 regulator driver");
++MODULE_LICENSE("GPL");
+diff --git a/include/linux/mfd/max25221.h b/include/linux/mfd/max25221.h
+new file mode 100644
+index 000000000..203e886e2
+--- /dev/null
++++ b/include/linux/mfd/max25221.h
+@@ -0,0 +1,203 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * Copyright (C) 2010-2015 Freescale Semiconductor, Inc. All Rights Reserved.
++ * Copyright 2019 NXP
++ */
++#ifndef __LINUX_REGULATOR_MAX25221_H_
++#define __LINUX_REGULATOR_MAX25221_H_
++
++/*
++ * PMIC Register Addresses
++ */
++enum {
++    REG_MAX25221_DEVICE 			= 0x00,
++    REG_MAX25221_TEMP				= 0X01,
++    REG_MAX25221_REG_CTRL			= 0X02,	
++    REG_MAX25221_FLTMASK1			= 0X03,	
++    REG_MAX25221_FLTMASK2			= 0X04,	
++    REG_MAX25221_FAULT1				= 0X05,
++    REG_MAX25221_FAULT2				= 0X06,
++    REG_MAX25221_CONFIG				= 0X07,
++    REG_MAX25221_DELAY_VCOM_LSB		= 0X08,		
++    REG_MAX25221_VCOM25				= 0X09,
++    REG_MAX25221_VCOM_L				= 0X0A,
++    REG_MAX25221_VCOM_H1			= 0X0B,	
++    REG_MAX25221_VCOM_H2			= 0X0C,	
++    REG_MAX25221_VTEMP25			= 0X0D,	
++	REG_MAX25221_VTEMP_L			= 0X0E,	
++    REG_MAX25221_VTEMP_H1			= 0X0F,	
++    REG_MAX25221_VTEMP_H2			= 0X10,	
++    REG_MAX25221_VCOM_MIN			= 0X11,	
++    REG_MAX25221_VCOM_MAX			= 0X12,	
++    REG_MAX25221_AVDD_SET			= 0X13,
++	REG_MAX25221_VGON				= 0X14,
++	REG_MAX25221_VGOFF				= 0X15
++
++};
++#define MAX25221_REG_NUM        21
++#define MAX25221_MAX_REGISTER   0xFF
++
++/*
++ * Bitfield macros that use rely on bitfield width/shift information.
++ */
++#define BITFMASK(field) (((1U << (field ## _WID)) - 1) << (field ## _LSH))
++#define BITFVAL(field, val) ((val) << (field ## _LSH))
++#define BITFEXT(var, bit) ((var & BITFMASK(bit)) >> (bit ## _LSH))
++
++/*
++ * Shift and width values for each register bitfield
++ */
++#define EXT_TEMP_LSH    7
++#define EXT_TEMP_WID    9
++
++#define THERMAL_SHUTDOWN_LSH    0
++#define THERMAL_SHUTDOWN_WID    1
++
++#define INT_TEMP_LSH    7
++#define INT_TEMP_WID    9
++
++#define STAT_BUSY_LSH   0
++#define STAT_BUSY_WID   1
++#define STAT_OPEN_LSH   1
++#define STAT_OPEN_WID   1
++#define STAT_SHRT_LSH   2
++#define STAT_SHRT_WID   1
++
++#define PROD_REV_LSH    0
++#define PROD_REV_WID    8
++
++#define PROD_ID_LSH     0
++#define PROD_ID_WID     8
++
++#define DVR_LSH         0
++#define DVR_WID         8
++
++#define ENABLE_LSH      0
++#define ENABLE_WID      1
++#define VCOM_ENABLE_LSH 1
++#define VCOM_ENABLE_WID 1
++
++#define FAULT_FBPG_LSH      0
++#define FAULT_FBPG_WID      1
++#define FAULT_HVINP_LSH     1
++#define FAULT_HVINP_WID     1
++#define FAULT_HVINN_LSH     2
++#define FAULT_HVINN_WID     1
++#define FAULT_FBNG_LSH      3
++#define FAULT_FBNG_WID      1
++#define FAULT_HVINPSC_LSH   4
++#define FAULT_HVINPSC_WID   1
++#define FAULT_HVINNSC_LSH   5
++#define FAULT_HVINNSC_WID   1
++#define FAULT_OT_LSH        6
++#define FAULT_OT_WID        1
++#define FAULT_POK_LSH       7
++#define FAULT_POK_WID       1
++
++#define HVINP_LSH           0
++#define HVINP_WID           4
++
++#define CTRL_DVR_LSH        0
++#define CTRL_DVR_WID        1
++#define CTRL_TIMING_LSH     1
++#define CTRL_TIMING_WID     1
++
++#define TIMING1_LSH         0
++#define TIMING1_WID         8
++#define TIMING2_LSH         0
++#define TIMING2_WID         8
++#define TIMING3_LSH         0
++#define TIMING3_WID         8
++#define TIMING4_LSH         0
++#define TIMING4_WID         8
++#define TIMING5_LSH         0
++#define TIMING5_WID         8
++#define TIMING6_LSH         0
++#define TIMING6_WID         8
++#define TIMING7_LSH         0
++#define TIMING7_WID         8
++#define TIMING8_LSH         0
++#define TIMING8_WID         8
++
++struct max25221 {
++	/* chip revision */
++	int rev;
++
++	struct device *dev;
++	struct max25221_platform_data *pdata;
++
++	/* Platform connection */
++	struct i2c_client *i2c_client;
++
++	/* Timings */
++	unsigned int gvee_pwrup;
++	unsigned int vneg_pwrup;
++	unsigned int vpos_pwrup;
++	unsigned int gvdd_pwrup;
++	unsigned int gvdd_pwrdn;
++	unsigned int vpos_pwrdn;
++	unsigned int vneg_pwrdn;
++	unsigned int gvee_pwrdn;
++
++	/* GPIOs */
++	int gpio_pmic_pwrgood;
++	int gpio_pmic_vcom_ctrl;
++	int gpio_pmic_enable;
++	int gpio_pmic_v3p3;
++	int gpio_pmic_intr;
++
++	/* MAX25221 part variables */
++	int pass_num;
++	int vcom_uV;
++
++	/* One-time VCOM setup marker */
++	bool vcom_setup;
++
++	/* powerup/powerdown wait time */
++	int max_wait;
++};
++
++enum {
++    /* In alphabetical order */
++    MAX25221_DISPLAY, /* virtual master enable */
++    MAX25221_NUM_REGULATORS,
++};
++
++/*
++ * Declarations
++ */
++struct regulator_init_data;
++struct max25221_regulator_data;
++
++struct max25221_platform_data {
++	unsigned int gvee_pwrup;
++	unsigned int vneg_pwrup;
++	unsigned int vpos_pwrup;
++	unsigned int gvdd_pwrup;
++	unsigned int gvdd_pwrdn;
++	unsigned int vpos_pwrdn;
++	unsigned int vneg_pwrdn;
++	unsigned int gvee_pwrdn;
++	int gpio_pmic_pwrgood;
++	int gpio_pmic_vcom_ctrl;
++	int gpio_pmic_enable;
++	int gpio_pmic_v3p3;
++	int gpio_pmic_intr;
++	int pass_num;
++	int vcom_uV;
++
++	/* PMIC */
++	struct max25221_regulator_data *regulators;
++	int num_regulators;
++};
++
++struct max25221_regulator_data {
++	int id;
++	struct regulator_init_data *initdata;
++	struct device_node *reg_node;
++};
++
++int max25221_reg_read(int reg_num, unsigned int *reg_val);
++int max25221_reg_write(int reg_num, const unsigned int reg_val);
++
++#endif

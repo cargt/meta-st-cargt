@@ -1,0 +1,10 @@
+Available images for OpenSTLinux layers are:
+
+  - Official OpenSTLinux images:
+      cargt-image-weston       -   Cargt's OpenSTLinux weston image with basic Wayland support (if enable in distro)
+
+  - Other OpenSTLinux images:
+      - Supported images:
+          cargt-image-weston      -   Cargt OpenSTLinux default Weston image
+          cargt-image-dev         -   Cargt OpenSTLinux development image
+
