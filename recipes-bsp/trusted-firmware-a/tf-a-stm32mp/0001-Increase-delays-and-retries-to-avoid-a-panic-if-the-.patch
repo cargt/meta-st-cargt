@@ -1,0 +1,59 @@
+From 2dd40438fb0b9b9a80ae2a6bceb6ce2f7653c844 Mon Sep 17 00:00:00 2001
+From: Tim Carney <tim.carney@cargt.com>
+Date: Wed, 10 Sep 2025 13:29:58 -0500
+Subject: [PATCH] Increase delays and retries to avoid a panic if the EMMC
+ doesn't come up fast enough on boot.
+
+---
+ drivers/mmc/mmc.c                           |  2 +-
+ drivers/st/mmc/stm32_sdmmc2.c               | 10 +++++-----
+ plat/intel/soc/common/drivers/sdmmc/sdmmc.h |  2 +-
+ 3 files changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/drivers/mmc/mmc.c b/drivers/mmc/mmc.c
+index b51e74436..248e35627 100644
+--- a/drivers/mmc/mmc.c
++++ b/drivers/mmc/mmc.c
+@@ -18,7 +18,7 @@
+ #include <lib/utils.h>
+ #include <plat/common/common_def.h>
+ 
+-#define MMC_DEFAULT_MAX_RETRIES		5
++#define MMC_DEFAULT_MAX_RETRIES		50
+ #define SEND_OP_COND_MAX_RETRIES	100
+ 
+ #define MULT_BY_512K_SHIFT		19
+diff --git a/drivers/st/mmc/stm32_sdmmc2.c b/drivers/st/mmc/stm32_sdmmc2.c
+index 54d66fb97..e109fefd8 100644
+--- a/drivers/st/mmc/stm32_sdmmc2.c
++++ b/drivers/st/mmc/stm32_sdmmc2.c
+@@ -119,11 +119,11 @@
+ #define TIMEOUT_10_MS			10U
+ 
+ /* Power cycle delays in ms */
+-#define VCC_POWER_OFF_DELAY		2
+-#define VCC_POWER_ON_DELAY		2
+-#define POWER_CYCLE_DELAY		2
+-#define POWER_OFF_DELAY			2
+-#define POWER_ON_DELAY			1
++#define VCC_POWER_OFF_DELAY		20
++#define VCC_POWER_ON_DELAY		20
++#define POWER_CYCLE_DELAY		20
++#define POWER_OFF_DELAY			20
++#define POWER_ON_DELAY			10
+ 
+ #ifndef DT_SDMMC2_COMPAT
+ #define DT_SDMMC2_COMPAT		"st,stm32-sdmmc2"
+diff --git a/plat/intel/soc/common/drivers/sdmmc/sdmmc.h b/plat/intel/soc/common/drivers/sdmmc/sdmmc.h
+index 16c6b04b9..779a654f0 100644
+--- a/plat/intel/soc/common/drivers/sdmmc/sdmmc.h
++++ b/plat/intel/soc/common/drivers/sdmmc/sdmmc.h
+@@ -13,7 +13,7 @@
+ #define PERIPHERAL_SDMMC_MASK			0x60
+ #define PERIPHERAL_SDMMC_OFFSET			6
+ 
+-#define DEFAULT_SDMMC_MAX_RETRIES		5
++#define DEFAULT_SDMMC_MAX_RETRIES		50
+ #define SEND_SDMMC_OP_COND_MAX_RETRIES		100
+ #define SDMMC_MULT_BY_512K_SHIFT		19
+ 
