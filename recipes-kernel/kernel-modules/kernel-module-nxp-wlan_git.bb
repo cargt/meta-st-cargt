@@ -16,6 +16,7 @@ SRC_URI = " \
     file://mlinux-moal_main-lower-PRINTM_MMSG-log-level-to-KERN_INFO.patch \
     file://mxm_wifiex_fix_build_error_for_64-bit_division.patch \
     file://mxm_wifiex_fix_build_error_for_udelay.patch \
+    file://moal_params.conf \
 "
 SRCREV = "5ad19e194f49ed9447bee7864eb562618ccaf9b1"
 
@@ -24,3 +25,12 @@ S = "${WORKDIR}/git"
 inherit module
 
 EXTRA_OEMAKE = "KERNELDIR=${STAGING_KERNEL_BUILDDIR} -C ${STAGING_KERNEL_BUILDDIR} M=${S}"
+
+do_install:append:class-target() {
+	install -d ${D}/etc/modprobe.d
+	install -m 644 ${WORKDIR}/moal_params.conf ${D}/etc/modprobe.d
+}
+
+FILES:${PN}:append:class-target = " \
+    /etc/modprobe.d/moal_params.conf \
+"
