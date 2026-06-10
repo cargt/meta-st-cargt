@@ -68,7 +68,8 @@ CORE_IMAGE_EXTRA_INSTALL += " \
     packagegroup-core-tools-profile \
     packagegroup-core-buildessential \
     ${@bb.utils.contains('MACHINE_FEATURES', '00378', 'cc33xx-firmware','', d)} \
-    ${@bb.utils.contains('MACHINE_FEATURES', '00395', 'kernel-module-nxp-wlan nxp-wlan-firmware-nxp-common nxp-wlan-firmware-nxpiw610-sdio','', d)} \    "
+    ${@bb.utils.contains('MACHINE_FEATURES', '00395', 'kernel-module-nxp-wlan nxp-wlan-firmware-nxp-common nxp-wlan-firmware-nxpiw610-sdio','', d)} \
+    "
 
 # NOTE:
 #   packagegroup-st-demo are installed on rootfs to populate the package
