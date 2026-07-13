@@ -1,0 +1,47 @@
+From 80f1fc0bdbd15c6c2e28c8651bcb7aad44c3816f Mon Sep 17 00:00:00 2001
+From: Tim Carney <tim.carney@cargt.com>
+Date: Fri, 10 Jul 2026 14:55:51 -0500
+Subject: [PATCH] Add MMC boot configuration commands in fb_mmc_boot_ops
+
+---
+ drivers/fastboot/fb_mmc.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/drivers/fastboot/fb_mmc.c b/drivers/fastboot/fb_mmc.c
+index 79a0aad91a8..cca39c3d9ed 100644
+--- a/drivers/fastboot/fb_mmc.c
++++ b/drivers/fastboot/fb_mmc.c
+@@ -5,6 +5,7 @@
+ 
+ #include <config.h>
+ #include <common.h>
++#include <command.h>
+ #include <blk.h>
+ #include <env.h>
+ #include <fastboot.h>
+@@ -260,6 +261,22 @@ static void fb_mmc_boot_ops(struct blk_desc *dev_desc, void *buffer,
+ 
+ 		printf("........ wrote %llu bytes to EMMC_BOOT%d\n",
+ 		       (u64)(blkcnt * blksz), hwpart);
++
++		/* Configure MMC boot partition */
++		{
++			char cmdbuf[60];
++			int dev_num = dev_desc->devnum;
++
++			sprintf(cmdbuf, "mmc bootbus %d 0 0 0; mmc partconf %d 1 %d 0",
++				dev_num, dev_num, hwpart);
++
++			if (run_command(cmdbuf, 0)) {
++				pr_err("MMC boot config commands failed\n");
++				fastboot_fail("Failed to configure MMC boot", response);
++				return;
++			}
++			printf("........ configured EMMC_BOOT%d for boot\n", hwpart);
++		}
+ 	} else { /* erase */
+ 		if (fb_mmc_erase_mmc_hwpart(dev_desc)) {
+ 			pr_err("Failed to erase EMMC_BOOT%d\n", hwpart);
+-- 
+2.34.1
+
