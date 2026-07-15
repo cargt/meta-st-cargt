@@ -1,0 +1,53 @@
+From 88f304c89d68df61abbcf13943c72f9ecfddad4c Mon Sep 17 00:00:00 2001
+From: Tim Carney <tim.carney@cargt.com>
+Date: Wed, 15 Jul 2026 10:54:22 -0500
+Subject: [PATCH] stm32mp2: Add missing STM32MP255 cases to get_eth_nb()
+
+get_eth_nb() enumerates every STM32MP25x CPU variant to decide how
+many MAC addresses to expect in OTP, but the switch has no case for
+any STM32MP255 part (255F/255D/255C/255A). On a board built around
+one of those (e.g. CPU: STM32MP255FAK), get_cpu_type() falls through
+to the default case and get_eth_nb() returns 0, so
+setup_mac_address() returns immediately without ever touching OTP -
+every MAC address stays unset regardless of what is actually fused.
+
+STM32MP255 is the same silicon as STM32MP257 without the TSN switch,
+so it has the same two GMACs as STM32MP253 and needs the same MAC
+count.
+
+Signed-off-by: Tim Carney <tim.carney@cargt.com>
+---
+ arch/arm/mach-stm32mp/stm32mp2/stm32mp25x.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm/mach-stm32mp/stm32mp2/stm32mp25x.c b/arch/arm/mach-stm32mp/stm32mp2/stm32mp25x.c
+index 0d199f6f903..2ac8bdefbc3 100644
+--- a/arch/arm/mach-stm32mp/stm32mp2/stm32mp25x.c
++++ b/arch/arm/mach-stm32mp/stm32mp2/stm32mp25x.c
+@@ -78,6 +78,14 @@ int get_eth_nb(void)
+ 	case CPU_STM32MP257Axx:
+ 		nb_eth = 5; /* dual ETH with TSN support */
+ 		break;
++	case CPU_STM32MP255Fxx:
++		fallthrough;
++	case CPU_STM32MP255Dxx:
++		fallthrough;
++	case CPU_STM32MP255Cxx:
++		fallthrough;
++	case CPU_STM32MP255Axx:
++		fallthrough;
+ 	case CPU_STM32MP253Fxx:
+ 		fallthrough;
+ 	case CPU_STM32MP253Dxx:
+@@ -85,7 +93,7 @@ int get_eth_nb(void)
+ 	case CPU_STM32MP253Cxx:
+ 		fallthrough;
+ 	case CPU_STM32MP253Axx:
+-		nb_eth = 2; /* dual ETH */
++		nb_eth = 2; /* dual ETH, no TSN switch */
+ 		break;
+ 	case CPU_STM32MP251Fxx:
+ 		fallthrough;
+-- 
+2.34.1
+

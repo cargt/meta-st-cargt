@@ -1,0 +1,130 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Tim Carney <tim.carney@cargt.com>
+Date: Wed, 15 Jul 2026 09:30:00 -0500
+Subject: [PATCH] Read OTP MAC addresses independently so partial
+ provisioning doesn't block all of them
+
+get_eth_nb() reports the maximum number of MAC addresses a given SoC
+variant could use (e.g. 5 for STM32MP257Fxx, to account for its TSN
+switch capability), not how many a specific board actually has
+provisioned in OTP. setup_mac_address() used that count to size a
+single misc_read() spanning every address's OTP words in one call. On
+a board that only has OTP fused for the MAC addresses it actually
+uses, that batched read fails as soon as it reaches an unprovisioned
+word - and since the read happens before any environment variable is
+set, none of the MAC addresses get set at all, not even the ones
+whose OTP words are fine on their own.
+
+Read each MAC address with its own misc_read() call instead, and skip
+(rather than abort on) a failed or invalid entry, so addresses that
+are actually provisioned still get set regardless of what happens
+with the others.
+
+Signed-off-by: Tim Carney <tim.carney@cargt.com>
+---
+ arch/arm/mach-stm32mp/soc.c | 51 +++++++++++++++++++++++---------------------
+ 1 file changed, 27 insertions(+), 24 deletions(-)
+
+diff --git a/arch/arm/mach-stm32mp/soc.c b/arch/arm/mach-stm32mp/soc.c
+index 318c6aa9351..8f4a1c2b7d6 100644
+--- a/arch/arm/mach-stm32mp/soc.c
++++ b/arch/arm/mach-stm32mp/soc.c
+@@ -10,21 +10,29 @@
+ #include <dm/device.h>
+ #include <dm/uclass.h>
+ 
+-/* max: 8 OTP for 5 mac address on stm32mp2*/
+-#define MAX_NB_OTP	8
++/* 2 OTP words is always enough to cover one 6-byte MAC address */
++#define NB_OTP_PER_MAC	2
+ 
+ /*
+  * If there is no MAC address in the environment, then it will be initialized
+  * (silently) from the value in the OTP.
++ *
++ * Each MAC address is read independently, rather than in one call spanning
++ * every address up to nb_eth: on boards where only some of the addresses
++ * get_eth_nb() accounts for are actually OTP-provisioned, a single read
++ * covering the whole range fails as soon as it reaches an unprovisioned
++ * word, leaving every MAC address unset - including the ones that were
++ * provisioned and readable on their own.
+  */
+ __weak int setup_mac_address(void)
+ {
+ 	int ret;
+ 	int i;
+-	u32 otp[MAX_NB_OTP];
++	u32 otp[NB_OTP_PER_MAC];
+ 	uchar enetaddr[ARP_HLEN];
+ 	struct udevice *dev;
+-	int nb_eth, nb_otp, index;
++	int nb_eth, index;
++	u32 byte_offset;
+ 
+ 	if (!IS_ENABLED(CONFIG_NET))
+ 		return 0;
+@@ -33,47 +41,44 @@
+ 	if (!nb_eth)
+ 		return 0;
+ 
+-	/* 6 bytes for each MAC addr and 4 bytes for each OTP */
+-	nb_otp = DIV_ROUND_UP(ARP_HLEN * nb_eth, 4);
+-	if (nb_otp > MAX_NB_OTP) {
+-		log_err("invalid number of OTP = %d, max = %d\n", nb_otp, MAX_NB_OTP);
+-		return -EINVAL;
+-	}
+-
+ 	ret = uclass_get_device_by_driver(UCLASS_MISC,
+ 					  DM_DRIVER_GET(stm32mp_bsec),
+ 					  &dev);
+ 	if (ret)
+ 		return ret;
+ 
+-	ret = misc_read(dev, STM32_BSEC_SHADOW(BSEC_OTP_MAC), otp, 4 * nb_otp);
+-	if (ret < 0)
+-		return ret;
+-
+ 	for (index = 0; index < nb_eth; index++) {
+ 		/* MAC already in environment */
+ 		if (eth_env_get_enetaddr_by_index("eth", index, enetaddr))
+ 			continue;
+ 
++		/* 6 bytes for each MAC addr and 4 bytes for each OTP */
++		byte_offset = ARP_HLEN * index;
++		ret = misc_read(dev, STM32_BSEC_SHADOW(BSEC_OTP_MAC + byte_offset / 4),
++				 otp, sizeof(otp));
++		if (ret < 0) {
++			log_debug("failed to read OTP for MAC address %d: %d\n",
++				  index, ret);
++			continue;
++		}
++
+ 		for (i = 0; i < ARP_HLEN; i++)
+-			enetaddr[i] = ((uint8_t *)&otp)[i + ARP_HLEN * index];
++			enetaddr[i] = ((uint8_t *)&otp)[(byte_offset % 4) + i];
+ 
+ 		/* skip FF:FF:FF:FF:FF:FF */
+ 		if (is_broadcast_ethaddr(enetaddr))
+ 			continue;
+ 
+ 		if (!is_valid_ethaddr(enetaddr)) {
+-			log_err("invalid MAC address %d in OTP %pM\n",
+-				index, enetaddr);
+-			return -EINVAL;
++			log_debug("invalid MAC address %d in OTP %pM\n",
++				  index, enetaddr);
++			continue;
+ 		}
+ 		log_debug("OTP MAC address %d = %pM\n", index, enetaddr);
+ 		ret = eth_env_set_enetaddr_by_index("eth", index, enetaddr);
+-		if (ret) {
++		if (ret)
+ 			log_err("Failed to set mac address %pM from OTP: %d\n",
+ 				enetaddr, ret);
+-			return ret;
+-		}
+ 	}
+ 
+ 	return 0;
+--
+2.43.0
