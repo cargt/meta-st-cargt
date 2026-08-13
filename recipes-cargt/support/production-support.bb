@@ -1,7 +1,10 @@
 SUMMARY = "Production programming/flashing helper scripts for STM32MP2 CARGT boards"
 DESCRIPTION = "Deploys the production_support scripts (production_program*.py, \
 FlashLayout templates, gen_correct_gpt.sh, etc.) into DEPLOY_DIR_IMAGE alongside \
-the board's other build artifacts, so they're always available after a build."
+the board's other build artifacts, so they're always available after a build. \
+Also bundles a prebuilt Linux fastboot binary (fastboot/Linux/fastboot, AOSP \
+platform-tools, Apache-2.0 - see fastboot/Notice.txt) so production_program_uuu.py \
+does not depend on a fastboot install on the host running these scripts."
 
 LICENSE = "CLOSED"
 
@@ -23,11 +26,16 @@ do_deploy() {
     # The scripts locate their FlashLayout TSVs relative to their own
     # location (flashlayout_cargt-image-dev/...), which Yocto already
     # deploys at the machine deploy dir root - so these must land there
-    # too, not in a subdirectory.
+    # too, not in a subdirectory. This also carries along fastboot/Linux/fastboot,
+    # which production_program_uuu.py locates the same way (relative to itself).
     cp -a ${S}/. ${DEPLOYDIR}/
     rm -rf ${DEPLOYDIR}/.git
     # scripts/create_sdcard_from_flashlayout.sh is ST's own tool, already
     # deployed by sdcard-raw-tools-native; this repo just bundles a copy.
     rm -rf ${DEPLOYDIR}/scripts
+    # cp -a preserves the executable bit from git, but re-assert it: a
+    # non-executable fastboot binary would only fail at flash time, on
+    # the production line, not at build time.
+    chmod 755 ${DEPLOYDIR}/fastboot/Linux/fastboot
 }
 addtask deploy before do_build after do_compile
