@@ -299,6 +299,12 @@ PACKAGE_CLASSES = "package_deb"
 # To enable archiver for recipes that are configured
 #ST_ARCHIVER_ENABLE = "1"
 
+# Deploys internal production-flashing helper scripts (production_program*.py,
+# FlashLayout templates) into DEPLOY_DIR_IMAGE. Requires SSH access to the
+# private cargt-internal GitLab repo, so this stays off by default - external
+# customers won't have access to it.
+#CARGT_PRODUCTION_SUPPORT_ENABLE = "1"
+
 # Setup environment for builds binary reproducibility
 REPRODUCIBLE_TIMESTAMP_ROOTFS = ""
 
