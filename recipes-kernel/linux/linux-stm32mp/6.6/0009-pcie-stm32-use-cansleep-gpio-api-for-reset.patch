@@ -1,0 +1,45 @@
+From: Cargt <tim.carney@cargt.com>
+Subject: [PATCH] PCI: stm32: use gpiod_set_value_cansleep() for reset GPIO
+
+stm32_pcie_start_link()/stop_link() use gpiod_set_value(), which
+gpiolib only permits on GPIO chips that cannot sleep. On boards where
+"reset-gpios" is provided by an I2C-backed GPIO expander (e.g.
+pca9555), every access blocks on an I2C transaction, so the chip is
+marked can_sleep and this trips WARN_ON(chip->can_sleep) in
+gpiod_set_value() (gpiolib.c) on every probe:
+
+  WARNING: CPU: 1 PID: 440 at drivers/gpio/gpiolib.c:3309 gpiod_set_value+0x40/0xa4
+  lr : stm32_pcie_start_link+0x28/0x8c [pcie_stm32]
+
+We are always called from process context here (probe/remove), so
+switch to the sleeping-safe variant.
+
+Signed-off-by: Cargt <tim.carney@cargt.com>
+---
+diff --git a/drivers/pci/controller/dwc/pcie-stm32.c b/drivers/pci/controller/dwc/pcie-stm32.c
+index 96976d8c5..1111111111 100644
+--- a/drivers/pci/controller/dwc/pcie-stm32.c
++++ b/drivers/pci/controller/dwc/pcie-stm32.c
+@@ -79,11 +79,11 @@
+ 
+ 	if (stm32_pcie->reset_gpio) {
+ 		/* Make sure PERST# is asserted. */
+-		gpiod_set_value(stm32_pcie->reset_gpio, 1);
++		gpiod_set_value_cansleep(stm32_pcie->reset_gpio, 1);
+ 
+ 		/* Deassert PERST# after 100us */
+ 		usleep_range(100, 200);
+-		gpiod_set_value(stm32_pcie->reset_gpio, 0);
++		gpiod_set_value_cansleep(stm32_pcie->reset_gpio, 0);
+ 	}
+ 
+ 	ret = regmap_update_bits(stm32_pcie->regmap, SYSCFG_PCIECR,
+@@ -108,7 +108,7 @@
+ 
+ 	/* Assert PERST# */
+ 	if (stm32_pcie->reset_gpio)
+-		gpiod_set_value(stm32_pcie->reset_gpio, 1);
++		gpiod_set_value_cansleep(stm32_pcie->reset_gpio, 1);
+ }
+ 
+ static int stm32_pcie_suspend(struct device *dev)
