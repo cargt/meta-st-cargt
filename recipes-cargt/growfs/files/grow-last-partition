@@ -1,0 +1,42 @@
+#!/bin/sh
+# Extend the last GPT partition on the boot disk to consume any space left
+# unused on physical media larger than the flashed image (e.g. writing a
+# compact SD card image to a bigger card). resize-helper then grows the
+# filesystem on top of the enlarged partition.
+
+log() {
+    echo "GROW-LAST-PARTITION: $1" > /dev/kmsg
+}
+
+if [ -f /bin/systemctl ]; then
+    systemctl --no-reload disable grow-last-partition.service
+fi
+
+ROOT_SRC=$(findmnt --noheadings --output=SOURCE / | cut -d'[' -f1)
+ROOT_SRC=$(readlink -f "$ROOT_SRC")
+
+case "$ROOT_SRC" in
+    /dev/mmcblk*p*)
+        ;;
+    *)
+        log "root device $ROOT_SRC is not an mmcblk partition, skipping"
+        exit 0
+        ;;
+esac
+
+DISK=$(echo "$ROOT_SRC" | sed -E 's/p[0-9]+$//')
+PARTNUM=$(echo "$ROOT_SRC" | sed -E 's/.*p([0-9]+)$/\1/')
+LAST_PARTNUM=$(sfdisk -l "$DISK" 2>/dev/null | grep -oE "$(basename "$DISK")p[0-9]+" | sed -E 's/.*p([0-9]+)$/\1/' | sort -n | tail -1)
+
+if [ -z "$LAST_PARTNUM" ] || [ "$PARTNUM" != "$LAST_PARTNUM" ]; then
+    log "root partition $PARTNUM is not the last partition ($LAST_PARTNUM) on $DISK, skipping"
+    exit 0
+fi
+
+log "growing partition $PARTNUM on $DISK to fill available disk space"
+echo ", +" | sfdisk --no-reread -N "$PARTNUM" "$DISK" > /dev/kmsg 2>&1
+
+partx -u "$DISK" > /dev/kmsg 2>&1
+udevadm settle
+
+log "done"

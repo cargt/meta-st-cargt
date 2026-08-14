@@ -27,6 +27,7 @@ IMAGE_FEATURES += "\
 #
 CORE_IMAGE_EXTRA_INSTALL += " \
     resize-helper \
+    grow-last-partition \
     st-hostname \
     \
     packagegroup-framework-core-base    \
