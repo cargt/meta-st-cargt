@@ -23,6 +23,14 @@ inherit deploy
 ERROR_QA:remove = "version-going-backwards"
 
 do_deploy() {
+    # fastboot/ in the shared deploy dir is owned entirely by this recipe
+    # (nothing else writes there), so clear out any stale copy left behind
+    # by an earlier interrupted/differently-configured build before
+    # redeploying - otherwise bitbake refuses to overwrite files it doesn't
+    # recognize as belonging to this task's manifest ("trying to install
+    # files into a shared area when those files already exist").
+    rm -rf ${DEPLOY_DIR_IMAGE}/fastboot
+
     # The scripts locate their FlashLayout TSVs relative to their own
     # location (flashlayout_cargt-image-dev/...), which Yocto already
     # deploys at the machine deploy dir root - so these must land there
