@@ -1,0 +1,14 @@
+[Unit]
+Description=NXP Bluetooth service
+Requires=sys-subsystem-net-devices-mlan0.device
+After=sys-subsystem-net-devices-mlan0.device
+
+[Service]
+Type=oneshot
+ExecStartPre=/usr/bin/env modprobe btnxpuart
+ExecStart=/usr/bin/sleep 3
+ExecStartPost=/usr/bin/hciconfig hci0 up
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
