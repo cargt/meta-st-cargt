@@ -47,8 +47,6 @@ CORE_IMAGE_EXTRA_INSTALL += " \
     curl \
     util-linux \
     util-linux-lsblk \
-    nvme-cli \
-    parted \
     iperf3 \
     can-utils \
     i2c-tools \
