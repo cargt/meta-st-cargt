@@ -34,6 +34,14 @@ SRC_URI += "${@bb.utils.contains('MACHINE_FEATURES', '00395', 'file://${LINUX_VE
             ${@bb.utils.contains('MACHINE_FEATURES', '00378', 'file://${LINUX_VERSION}/0007-Add-support-for-RX8111-RTC-on-00395.patch', '', d)} \
             "
 
+# stm32-usart break_ctl pm_runtime race fix: not tied to any one board's
+# MACHINE_FEATURES - it's a generic driver correctness fix (async
+# pm_runtime_get() racing an immediate register write) that can affect any
+# STM32MP2 board with a UART-attached device that issues an out-of-band
+# break control (observed via btnxpuart's power-save workqueue on 00395),
+# so apply it unconditionally rather than gating it.
+SRC_URI += "file://${LINUX_VERSION}/0010-serial-stm32-fix-break_ctl-pm_runtime-race.patch"
+
 SRC_URI:class-devupstream += " file://${LINUX_VERSION}/cargt_00395_kernel_config_mods.config;subdir=fragments/features \
                                file://${LINUX_VERSION}/cargt_00378_kernel_config_mods.config;subdir=fragments/features \
                                file://${LINUX_VERSION}/cargt_00365_kernel_config_mods.config;subdir=fragments/features \
