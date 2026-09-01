@@ -1,0 +1,23 @@
+From: CARGT <engineering@cargt.com>
+Subject: [PATCH] resize-helper: fsck each filesystem before resizing it
+
+The direct-resize2fs fallback path (taken when systemd-growfs isn't
+available) runs resize2fs against every GPT-partitioned ext4 device it
+finds, with no fsck first. Growing an unverified filesystem produced
+severe ext4 metadata corruption on affected units (garbage
+i_size/i_blocks, impossible timestamps, orphaned inodes) when this same
+pattern was found in a separate first-boot resize script -- fsck each
+device immediately before resizing it here too.
+
+Upstream-Status: Pending [not sent upstream]
+
+--- a/resize-helper
++++ b/resize-helper
+@@ -67,6 +67,7 @@
+         if [ -e /dev/${device} ]; then
+             if [ "$PART_TABLE_TYPE" = "gpt" ]; then
+                 echo "Resize /dev/${device}"
++                e2fsck -f -y -c -C 0 "/dev/${device}"
+                 ${RESIZE2FS} "/dev/${device}"
+             fi
+         fi

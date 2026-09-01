@@ -1,0 +1,24 @@
+From: CARGT <engineering@cargt.com>
+Subject: [PATCH] init-resize: fsck the rootfs partition before growing it
+
+Every other filesystem resized here (userfs, vendorfs, bootfs) is
+force-checked with e2fsck before resize2fs grows it. The rootfs case
+was missing that check, so resize2fs ran against an unverified
+filesystem on first boot. This produced severe ext4 metadata
+corruption on affected units (garbage i_size/i_blocks, impossible
+timestamps, orphaned inodes reported by a later e2fsck run) -- match
+the same fsck-then-resize pattern used for the other three partitions.
+
+Upstream-Status: Pending [not sent upstream to ST]
+
+--- a/init-resize.sh
++++ b/init-resize.sh
+@@ -44,7 +44,7 @@
+                                     ;;
+                                 root*)
+                                     echo "RESIZE ROOTFS [$DEVICE]"
+-                                    /sbin/resize2fs $DEVICE
++                                    /sbin/e2fsck -f -y -c -C 0 $DEVICE && /sbin/resize2fs $DEVICE
+                                     ;;
+                                 vendor*)
+                                     echo "RESIZE VENDORFS [$DEVICE]"
