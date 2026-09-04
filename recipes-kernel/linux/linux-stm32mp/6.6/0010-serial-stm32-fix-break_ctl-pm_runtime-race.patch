@@ -1,0 +1,65 @@
+From: Cargt <tim.carney@cargt.com>
+Subject: [PATCH] serial: stm32: fix pm_runtime race in break_ctl
+
+stm32_usart_break_ctl() calls pm_runtime_get(), the non-blocking
+variant, which only requests an async resume and returns immediately
+without waiting for the clock/power domain to actually come back up.
+It then immediately takes the port lock and writes USART_RQR_SBKRQ
+directly to hardware. If the port has already autosuspended, this
+races a still-in-progress resume and can hit the peripheral before
+its clock is back on, producing a synchronous external abort:
+
+  Internal error: synchronous external abort: 0000000096000210 [#1] PREEMPT SMP
+  ...
+  pc : stm32_usart_break_ctl+0x48/0x98
+  Call trace:
+   stm32_usart_break_ctl+0x48/0x98
+   uart_break_ctl+0x4c/0x78
+   ttyport_break_ctl+0x28/0x3c
+   serdev_device_break_ctl+0x24/0x38
+   ps_control+0x68/0x198 [btnxpuart]
+   ps_work_func+0x50/0x74 [btnxpuart]
+
+Observed triggered from btnxpuart's power-save workqueue, which calls
+serdev_device_break_ctl() asynchronously with no other guarantee the
+port is already resumed - unlike the port's normal read/write paths,
+which are only reached while a user session keeps the device
+continuously active.
+
+This pm_runtime handling in break_ctl is a Cargt/ST vendor addition on
+top of mainline (mainline's stm32_usart_break_ctl(), introduced in
+30e945861f3b ("serial: stm32: add support for break control"), has
+never had any pm_runtime calls in it at all) - no upstream fix exists
+to pull in for this, so switch this one call site to the blocking
+pm_runtime_resume_and_get() so the register write only happens once
+the device is confirmed active, matching the pattern already used
+correctly elsewhere in the kernel (e.g. 8250_omap.c).
+
+Signed-off-by: Cargt <tim.carney@cargt.com>
+---
+diff --git a/drivers/tty/serial/stm32-usart.c b/drivers/tty/serial/stm32-usart.c
+index 1111111111..2222222222 100644
+--- a/drivers/tty/serial/stm32-usart.c
++++ b/drivers/tty/serial/stm32-usart.c
+@@ -1341,7 +1341,20 @@ static void stm32_usart_break_ctl(struct uart_port *port, int break_state)
+ 	const struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
+ 	unsigned long flags;
+
+-	pm_runtime_get(port->dev);
++	/*
++	 * pm_runtime_get() only requests an async resume and returns
++	 * immediately - it does not wait for the clock/power domain to
++	 * actually come back up. If this port has already autosuspended,
++	 * the register write below can then race a still-in-progress
++	 * resume and hit an unclocked peripheral, causing a synchronous
++	 * external abort. This has been observed triggered from
++	 * btnxpuart's power-save workqueue calling serdev_device_break_ctl()
++	 * asynchronously, with no other guarantee the port is already
++	 * resumed. Use the blocking variant so the register write only
++	 * happens once the device is confirmed active.
++	 */
++	if (pm_runtime_resume_and_get(port->dev) < 0)
++		return;
+
+ 	spin_lock_irqsave(&port->lock, flags);
+
