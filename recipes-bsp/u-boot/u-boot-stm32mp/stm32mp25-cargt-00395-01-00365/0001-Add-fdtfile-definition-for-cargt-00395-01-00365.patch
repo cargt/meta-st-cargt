@@ -1,0 +1,32 @@
+From: Cargt <tim.carney@cargt.com>
+Subject: [PATCH] Add fdtfile definition for cargt-00395-01-00365.
+
+The previous fdtfile patch was keyed off
+MACHINE_FEATURES = "00395 00365", which both 00395-01-00365 and
+00395-02-00365 share, so it couldn't tell the two boards apart and
+both got the same hardcoded fdtfile=stm32mp257f-cargt-00395-00365v3.dtb
+(a board that no longer exists). It was dropped without a replacement
+actually present in this layer, leaving fdtfile completely unset -
+U-Boot then has no default devicetree to load, requiring it to be set
+by hand every boot.
+
+Use a MACHINE-keyed SRC_URI:append instead (see the u-boot-stm32mp_%.bbappend
+change) so each board gets its own correctly-named default. This is
+the base devicetree with no LVDS panel variant selected; boards with a
+specific panel attached can still override fdtfile to one of the
+per-panel devicetrees (e.g. stm32mp257f-cargt-00395-01-00365-glt1011280800is1.dtb)
+as needed.
+---
+diff --git a/include/configs/stm32mp25_st_common.h b/include/configs/stm32mp25_st_common.h
+index ab5a4a91644..63887dfd6aa 100644
+--- a/include/configs/stm32mp25_st_common.h
++++ b/include/configs/stm32mp25_st_common.h
+@@ -10,7 +10,8 @@
+
+ #define STM32MP_BOARD_EXTRA_ENV \
+ 	"usb_pgood_delay=2000\0" \
+-	"console=ttySTM0\0"
++	"console=ttySTM0\0" \
++	"fdtfile=stm32mp257f-cargt-00395-01-00365.dtb\0"
+
+ #include <configs/stm32mp25_common.h>
