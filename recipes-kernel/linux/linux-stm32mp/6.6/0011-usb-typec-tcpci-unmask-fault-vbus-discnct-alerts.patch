@@ -1,0 +1,62 @@
+From: Cargt <tim.carney@cargt.com>
+Subject: [PATCH] usb: typec: tcpci: unmask FAULT/VBUS_DISCNCT/etc alerts
+
+tcpci_irq() clears every ALERT status bit it sees (the write-back a
+few lines above tcpci_irq()'s return covers anything other than
+RX_STATUS, unconditionally), but only reports IRQ_HANDLED for bits
+that are also present in tcpci->alert_mask:
+
+  return IRQ_RETVAL(status & tcpci->alert_mask);
+
+tcpci_start() never includes TCPC_ALERT_FAULT, TCPC_ALERT_VBUS_DISCNCT,
+TCPC_ALERT_RX_BUF_OVF, TCPC_ALERT_V_ALARM_LO or TCPC_ALERT_V_ALARM_HI
+in that mask. A host actively negotiating USB-PD (voltage/current
+renegotiation, VBUS transitions, marginal-cable fault conditions) can
+legitimately assert any of these. Each occurrence is correctly
+acknowledged at the register level, but never counted as "handled" by
+this driver, so a host that triggers one of them repeatedly produces a
+long run of IRQ_NONE returns from the kernel's point of view. Enough
+of those in a short window and the generic IRQ layer's spurious-IRQ
+protection disables the line outright ("irq N: nobody cared"), after
+which the TCPCI stops reporting any further port events for the rest
+of uptime - CC status, VBUS, everything - not just the alert type that
+triggered the storm.
+
+Observed on a PTN5110 (drivers/usb/typec/tcpm/tcpci.c handles it
+directly, no vendor-specific quirk file) when booted with the USB-C
+cable attached to a PD-capable host PC used for flashing; reproduced
+consistently in that configuration, not seen with the cable
+disconnected at boot or with a plain power-only source.
+
+No new handling logic is added for these alert types - they're already
+being cleared correctly by the existing unconditional write-back above
+this mask check. This only fixes the driver's own bookkeeping so a
+legitimate, already-serviced alert is recognized as such instead of
+silently falling through and eventually taking the IRQ line down.
+
+Signed-off-by: Cargt <tim.carney@cargt.com>
+---
+diff --git a/drivers/usb/typec/tcpm/tcpci.c b/drivers/usb/typec/tcpm/tcpci.c
+index 1111111111..2222222222 100644
+--- a/drivers/usb/typec/tcpm/tcpci.c
++++ b/drivers/usb/typec/tcpm/tcpci.c
+@@ -639,7 +639,18 @@
+
+ 	reg = TCPC_ALERT_TX_SUCCESS | TCPC_ALERT_TX_FAILED |
+ 		TCPC_ALERT_TX_DISCARDED | TCPC_ALERT_RX_STATUS |
+-		TCPC_ALERT_RX_HARD_RST | TCPC_ALERT_CC_STATUS;
++		TCPC_ALERT_RX_HARD_RST | TCPC_ALERT_CC_STATUS |
++		/*
++		 * These are legitimately raised by a host doing active
++		 * USB-PD negotiation and are already cleared by the
++		 * unconditional write-back in tcpci_irq() regardless of
++		 * this mask - include them so that clearing is also
++		 * recognized as IRQ_HANDLED, instead of eventually
++		 * tripping the spurious-IRQ disable on this line.
++		 */
++		TCPC_ALERT_FAULT | TCPC_ALERT_VBUS_DISCNCT |
++		TCPC_ALERT_RX_BUF_OVF | TCPC_ALERT_V_ALARM_LO |
++		TCPC_ALERT_V_ALARM_HI;
+ 	if (tcpci->controls_vbus)
+ 		reg |= TCPC_ALERT_POWER_STATUS;
+ 	/* Enable VSAFE0V status interrupt when detecting VSAFE0V is supported */

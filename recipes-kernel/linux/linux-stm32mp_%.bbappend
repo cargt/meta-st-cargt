@@ -42,6 +42,13 @@ SRC_URI += "${@bb.utils.contains('MACHINE_FEATURES', '00395', 'file://${LINUX_VE
 # so apply it unconditionally rather than gating it.
 SRC_URI += "file://${LINUX_VERSION}/0010-serial-stm32-fix-break_ctl-pm_runtime-race.patch"
 
+# tcpci ALERT_MASK is missing several legitimate alert types (FAULT,
+# VBUS_DISCNCT, RX_BUF_OVF, V_ALARM_LO/HI), causing "irq N: nobody
+# cared" and a disabled TCPC interrupt line when a PD-negotiating host
+# triggers one repeatedly. Generic driver correctness fix, not tied to
+# any one board - see the patch for the observed failure.
+SRC_URI += "file://${LINUX_VERSION}/0011-usb-typec-tcpci-unmask-fault-vbus-discnct-alerts.patch"
+
 SRC_URI:class-devupstream += " file://${LINUX_VERSION}/cargt_00395_kernel_config_mods.config;subdir=fragments/features \
                                file://${LINUX_VERSION}/cargt_00378_kernel_config_mods.config;subdir=fragments/features \
                                file://${LINUX_VERSION}/cargt_00365_kernel_config_mods.config;subdir=fragments/features \
