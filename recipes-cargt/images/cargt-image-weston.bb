@@ -2,6 +2,7 @@ SUMMARY = "OpenSTLinux weston image with basic Wayland support (if enable in dis
 LICENSE = "Proprietary"
 
 include recipes-st/images/st-image.inc
+include recipes-cargt/images/cargt-rauc-ab-flashlayout.inc
 
 inherit core-image features_check
 
@@ -69,6 +70,7 @@ CORE_IMAGE_EXTRA_INSTALL += " \
     packagegroup-core-buildessential \
     ${@bb.utils.contains('MACHINE_FEATURES', '00378', 'cc33xx-firmware','', d)} \
     ${@bb.utils.contains('MACHINE_FEATURES', '00395', 'kernel-module-nxp-wlan nxp-wlan-firmware-nxp-common nxp-wlan-firmware-nxpiw610-sdio','', d)} \
+    ${@bb.utils.contains('DISTRO_FEATURES', 'rauc', 'rauc rauc-conf fwu-gen-metadata-v2 u-boot-tools-stm32mp cargt-device-symlinks','', d)} \
     "
 
 # NOTE:
