@@ -15,3 +15,11 @@ SRC_URI += "file://0001-fsck-before-resize2fs-in-direct-resize-path.patch"
 # the patch for why leaving this unpatched costs minutes on every OTA
 # update's first boot into the newly-installed slot, not just once.
 SRC_URI:append = "${@bb.utils.contains('DISTRO_FEATURES', 'rauc', ' file://0002-skip-fixed-size-ab-partitions.patch', '', d)}"
+
+# RAUC A/B boards only: userfs is shared across both rootfs-a/rootfs-b
+# slots, but this script's own "already ran" state (a disabled systemd
+# unit) lives in /etc, part of rootfs - which every OTA update reflashes.
+# Without this, the (now userfs-only, but still slow) fsck+resize2fs pass
+# re-runs on every OTA update's first boot into the newly-installed slot,
+# not just the very first boot ever. See the patch.
+SRC_URI:append = "${@bb.utils.contains('DISTRO_FEATURES', 'rauc', ' file://0003-skip-userfs-resize-if-already-done.patch', '', d)}"

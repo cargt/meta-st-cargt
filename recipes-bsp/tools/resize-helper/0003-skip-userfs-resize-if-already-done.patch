@@ -1,0 +1,67 @@
+From: CARGT <engineering@cargt.com>
+Subject: [PATCH] resize-helper: skip userfs resize if already done
+
+userfs is the single partition shared across both RAUC A/B rootfs slots.
+This script's own "run only once" mechanism - disabling its systemd unit
+- lives in /etc, which is part of rootfs, and rootfs-a/rootfs-b are each
+reflashed wholesale by every RAUC OTA update. So on RAUC A/B boards, the
+service re-enables itself (via the fresh rootfs image) and re-runs on
+every first boot into a newly-installed slot, redoing the full
+e2fsck -f -y -c (bad-blocks scan) + resize2fs against userfs even though
+it was already grown to full size the very first time, adding minutes to
+every OTA update's first boot for no benefit.
+
+Record a marker on userfs itself once it's been resized, and skip both
+the systemd-growfs and direct-resize2fs paths when it's already present.
+
+Upstream-Status: Pending [not sent upstream - specific to a custom A/B
+partition scheme]
+
+--- a/resize-helper
++++ b/resize-helper
+@@ -33,6 +33,16 @@
+ # ROOT_DEVICE=$(findmnt --noheadings --output=SOURCE / | cut -d'[' -f1)
+ DEVICES=$(ls /sys/fs/ext4/)
+ 
++# userfs is the one partition shared across both RAUC A/B rootfs slots -
++# unlike the marker this script uses to avoid re-running itself (disabling
++# its own systemd unit, which lives in /etc and so is reset every time a
++# fresh rootfs-a/rootfs-b image is installed), a marker recorded here
++# survives OTA updates and slot switches, so userfs is only ever actually
++# grown/fscked once, not on every first boot into a newly-installed slot.
++USERFS_RESIZE_MARKER=/usr/local/.resize-helper-done
++USERFS_ALREADY_RESIZED=0
++[ -f "$USERFS_RESIZE_MARKER" ] && USERFS_ALREADY_RESIZED=1
++
+ echo "RESIZE-HELPER START" > /dev/kmsg
+ 
+ # disable service to be sure it will be executed only one time
+@@ -54,7 +64,10 @@
+     then
+         [ -f /sbin/mount-partitions.sh ] && /sbin/mount-partitions.sh stop
+     fi
+-    /lib/systemd/systemd-growfs /usr/local/
++    if [ "$USERFS_ALREADY_RESIZED" = "0" ]; then
++        /lib/systemd/systemd-growfs /usr/local/
++        touch "$USERFS_RESIZE_MARKER"
++    fi
+ else
+     echo "RESIZE-HELPER: Using directly resize2fs" > /dev/kmsg
+     # umount partition before to resize it
+@@ -64,10 +77,15 @@
+         if [ -e /dev/${device} ]; then
+             if [ "$PART_TABLE_TYPE" = "gpt" ]; then
+                 PART_LABEL=$(udevadm info --query=property --name=/dev/${device} | grep '^ID_PART_ENTRY_NAME=' | cut -d'=' -f2)
+-                if [ "$PART_LABEL" = "userfs" ]; then
++                if [ "$PART_LABEL" = "userfs" ] && [ "$USERFS_ALREADY_RESIZED" = "0" ]; then
+                     echo "Resize /dev/${device}"
+                     e2fsck -f -y -c -C 0 "/dev/${device}"
+                     ${RESIZE2FS} "/dev/${device}"
++                    mkdir -p /tmp/userfs-mark
++                    mount "/dev/${device}" /tmp/userfs-mark
++                    touch "/tmp/userfs-mark/$(basename "$USERFS_RESIZE_MARKER")"
++                    umount /tmp/userfs-mark
++                    rmdir /tmp/userfs-mark
+                 fi
+             fi
+         fi
