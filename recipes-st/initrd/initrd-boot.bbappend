@@ -5,3 +5,10 @@ FILESEXTRAPATHS:prepend := "${THISDIR}/${PN}:"
 # ext4 filesystem produced severe metadata corruption on affected units.
 # See the patch for details.
 SRC_URI += "file://0001-resize-fsck-rootfs-before-growing-it.patch"
+
+# RAUC A/B boards only: bootfs/vendorfs/rootfs are fixed-size -a/-b slots
+# with no remaining space to grow into (unlike single-bank boards, where
+# they legitimately grow to fill whatever's left on the eMMC/SD card) - see
+# the patch for why leaving this unpatched costs minutes on every OTA
+# update's first boot into the newly-installed slot, not just once.
+SRC_URI:append = "${@bb.utils.contains('DISTRO_FEATURES', 'rauc', ' file://0002-skip-first-boot-resize-for-fixed-size-ab-partitions.patch', '', d)}"

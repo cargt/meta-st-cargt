@@ -1,0 +1,48 @@
+From: CARGT <engineering@cargt.com>
+Subject: [PATCH] resize-helper: only grow userfs, not the fixed-size A/B
+ slots
+
+bootfs, vendorfs and rootfs are duplicated into -a/-b RAUC OTA slots,
+each built to (and flashed at) a fixed size with no "remaining space"
+to grow into - unlike userfs, which is intentionally built small and
+grown once to fill whatever's left on the eMMC. Both the systemd-growfs
+path and the direct-resize2fs fallback here unconditionally process
+every mounted ext4 filesystem (/, /boot, /vendor, /usr/local),
+including a full e2fsck -c bad-blocks scan in the fallback path - on
+every first boot of a freshly-built rootfs. For RAUC that means every
+OTA update's first boot into the slot that was just updated, not just
+a one-time factory cost. Restrict both paths to userfs (identified by
+its unique, non-duplicated GPT partition label) since it's the only
+partition here that still needs growing.
+
+Upstream-Status: Pending [not sent upstream to ST - specific to a
+custom A/B partition scheme]
+
+--- a/resize-helper
++++ b/resize-helper
+@@ -54,9 +54,6 @@
+     then
+         [ -f /sbin/mount-partitions.sh ] && /sbin/mount-partitions.sh stop
+     fi
+-    /lib/systemd/systemd-growfs /
+-    /lib/systemd/systemd-growfs /boot
+-    /lib/systemd/systemd-growfs /vendor
+     /lib/systemd/systemd-growfs /usr/local/
+ else
+     echo "RESIZE-HELPER: Using directly resize2fs" > /dev/kmsg
+@@ -66,9 +63,12 @@
+         PART_TABLE_TYPE=$(udevadm info --query=property --name=/dev/${device} | grep '^ID_PART_TABLE_TYPE=' | cut -d'=' -f2)
+         if [ -e /dev/${device} ]; then
+             if [ "$PART_TABLE_TYPE" = "gpt" ]; then
+-                echo "Resize /dev/${device}"
+-                e2fsck -f -y -c -C 0 "/dev/${device}"
+-                ${RESIZE2FS} "/dev/${device}"
++                PART_LABEL=$(udevadm info --query=property --name=/dev/${device} | grep '^ID_PART_ENTRY_NAME=' | cut -d'=' -f2)
++                if [ "$PART_LABEL" = "userfs" ]; then
++                    echo "Resize /dev/${device}"
++                    e2fsck -f -y -c -C 0 "/dev/${device}"
++                    ${RESIZE2FS} "/dev/${device}"
++                fi
+             fi
+         fi
+     done
