@@ -4,10 +4,11 @@
 > added to `meta-st-cargt` / `meta-cargt-stm32mp-addons` for machine
 > `stm32mp25-cargt-00395-02-00365`. It's being written up for
 > dev.cargt.com; a companion doc for the i.MX/SWUpdate side is planned once
-> that work happens. eMMC A/B updates and SD card boot are both now
-> verified working; RAUC-over-SD-card and the rollback-safety fix are
-> still open — see "Testing status" at the end before treating any
-> specific claim as fully validated in production.
+> that work happens. RAUC A/B updates are now verified working
+> end-to-end on **both** eMMC and SD card; the rollback-safety gap
+> (§2.5) is the one remaining open item — see "Testing status" at the
+> end before treating any specific claim as fully validated in
+> production.
 
 ## 1. Overview
 
@@ -264,21 +265,28 @@ failing card. If a similar corruption reappears, re-verify the source
 image first (rules out a build regression) before suspecting the card or
 write path again.
 
-**Not yet tested: RAUC-over-SD-card itself.** One more thing to account
-for first — on this specific test rig, U-Boot is always physically
-strapped to load from eMMC even when Linux boots from the SD card, and
-`fw_env.config`'s `/run/cargt-part/u-boot-env` resolves to *whichever
-device Linux's root is on* (§2.4) — so `fw_setenv` run from an
-SD-card-booted system would target the SD card's own (unused)
-`u-boot-env` partition, not the one U-Boot actually reads. That means
-`st-boot-script.sh`'s `set-primary` (which relies on `fw_setenv`) would
-silently fail to influence the next boot in *this specific dual-media
-test configuration*. This is a test-rig artifact, not a product bug — a
-real deployment that boots both U-Boot and Linux from the same SD card
-(no eMMC, or boot straps set to SD) wouldn't hit it, since U-Boot's own
-environment would live on that same card. Worth knowing before RAUC
-install/set-primary testing over SD card is attempted, so a no-op
-`set-primary` isn't misread as a new bug.
+**RAUC-over-SD-card: confirmed working end-to-end.** Physically
+re-strapping the boot-mode switches to load U-Boot itself from the SD
+card (not just Linux) resolved the `fw_env.config`/`set-primary` caveat
+noted in an earlier draft of this section — with both U-Boot and Linux
+genuinely on the SD card, `fw_setenv` correctly targets the same
+`u-boot-env` partition U-Boot itself reads. That surfaced one more bug
+in the same family, caught before it could produce misleading test
+results: `post-install.sh` hardcoded `rootfs_part_num_dico = {"A": 10,
+"B": 11}` (eMMC's numbers) when patching the newly-installed bank's
+`extlinux.conf` — on the SD card the regex's search pattern (literal
+`p10`) never matched, so bank B's config was left saying `rauc.slot=B`
+while still pointing `root=` at bank A's own partition. Fixed by
+discovering the actual partition number baked into each device's own
+"A" default and deriving "B" as that number plus one, rather than
+assuming fixed values — correct on both eMMC and SD card without any
+device detection, since rootfs-b always immediately follows rootfs-a in
+the partition order on either device.
+
+With that fixed, a full `rauc install` → reboot → verify cycle over the
+SD card succeeded: `root=/dev/mmcblk0p13`, `rauc.slot=B`, `rauc status`
+reports `booted: B`, `boot_status: good`. This is the first complete
+RAUC A/B OTA update cycle confirmed working on the SD card.
 
 ## 3. Implementation Details
 
@@ -474,11 +482,22 @@ fw_printenv bootcmd altbootcmd altboot bootcount
   hang, contrary to the initial live diagnosis. Full boot verified via
   SSH: correct `root=`, correct mounts, `rauc status` good, all
   `/run/cargt-part/*` symlinks correctly SD-card-scoped.
-- **SD card RAUC updates: not yet tested.** SD card boot itself is now
-  confirmed working, but installing/booting an actual RAUC update while
-  running from the SD card hasn't been tried yet — see the
-  `fw_env.config`/`set-primary` caveat in §2.6 first (specific to this
-  dual-media test rig, not expected in a real SD-card-only deployment).
+- **SD card RAUC updates: PASS.** With U-Boot itself also physically
+  strapped to the SD card (resolving the `fw_env.config` dual-media
+  caveat noted in an earlier draft), a full `rauc install` → reboot →
+  verify cycle succeeded: `root=/dev/mmcblk0p13`, `rauc.slot=B`, `rauc
+  status` reports `booted: B`, `boot_status: good`. Found and fixed one
+  more bug in the same "eMMC/SD card numbers don't match" family along
+  the way — `post-install.sh`'s hardcoded `rootfs_part_num_dico`
+  (§2.6) — before it could produce a misleading result.
+- **Known gap remaining on the SD card path:** `userfs` has not yet had
+  its resize verified on a fresh SD card flash built with the e2fsck-twice
+  fix (§ implementation notes) — the SD card currently in use for testing
+  still has `userfs` stuck at its built 200M size from before that fix
+  landed, which was enough to block pushing a bundle to `/usr/local`
+  during this round (worked around by staging it in `/tmp` instead).
+  Re-verify on the next fresh SD card reflash.
 
 This section reflects the state as of the most recent test session; keep
-it in sync as SD-card RAUC testing and any rollback-mechanism fix land.
+it in sync as the userfs-resize re-verification and any rollback-mechanism
+fix land.
