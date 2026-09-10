@@ -6,10 +6,16 @@ KERNEL_CONFIG_FRAGMENTS:append:stm32mp2common = " ${@bb.utils.contains('MACHINE_
 KERNEL_CONFIG_FRAGMENTS:append:stm32mp2common = " ${@bb.utils.contains('MACHINE_FEATURES', '00365', '${WORKDIR}/fragments/features/${LINUX_VERSION}/cargt_00365_kernel_config_mods.config', '', d)} "
 KERNEL_CONFIG_FRAGMENTS:append:stm32mp2common = " ${@bb.utils.contains('MACHINE_FEATURES', '00393', '${WORKDIR}/fragments/features/${LINUX_VERSION}/cargt_00393_kernel_config_mods.config', '', d)} "
 
+# RAUC A/B OTA updates: dm-verity bundle verification + loop/dm/squashfs
+# support RAUC itself needs. Gated on DISTRO_FEATURES (not MACHINE_FEATURES)
+# since it's set distro-wide for cargt-openstlinux-weston, not per-board.
+KERNEL_CONFIG_FRAGMENTS:append = " ${@bb.utils.contains('DISTRO_FEATURES', 'rauc', '${WORKDIR}/fragments/features/${LINUX_VERSION}/cargt_rauc_kernel_config_mods.config', '', d)} "
+
 SRC_URI += "file://${LINUX_VERSION}/cargt_00378_kernel_config_mods.config;subdir=fragments/features \
             file://${LINUX_VERSION}/cargt_00365_kernel_config_mods.config;subdir=fragments/features \
             file://${LINUX_VERSION}/cargt_00395_kernel_config_mods.config;subdir=fragments/features \
             file://${LINUX_VERSION}/cargt_00393_kernel_config_mods.config;subdir=fragments/features \
+            file://${LINUX_VERSION}/cargt_rauc_kernel_config_mods.config;subdir=fragments/features \
             "
 
 # 00378 SOM: CC33xx wifi/bt driver
@@ -53,4 +59,5 @@ SRC_URI:class-devupstream += " file://${LINUX_VERSION}/cargt_00395_kernel_config
                                file://${LINUX_VERSION}/cargt_00378_kernel_config_mods.config;subdir=fragments/features \
                                file://${LINUX_VERSION}/cargt_00365_kernel_config_mods.config;subdir=fragments/features \
                                file://${LINUX_VERSION}/cargt_00393_kernel_config_mods.config;subdir=fragments/features \
+                               file://${LINUX_VERSION}/cargt_rauc_kernel_config_mods.config;subdir=fragments/features \
                                "
