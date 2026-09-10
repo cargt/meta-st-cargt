@@ -6,6 +6,11 @@ FILESEXTRAPATHS:prepend := "${THISDIR}/${PN}:"
 # See the patch for details.
 SRC_URI += "file://0001-resize-fsck-rootfs-before-growing-it.patch"
 
+# Not RAUC-specific - affects any board's userfs on a genuinely fresh
+# image's first boot. A single e2fsck pass that actually fixes something
+# leaves resize2fs unwilling to grow the filesystem; see the patch.
+SRC_URI += "file://0003-fsck-userfs-twice-before-resizing.patch"
+
 # RAUC A/B boards only: bootfs/vendorfs/rootfs are fixed-size -a/-b slots
 # with no remaining space to grow into (unlike single-bank boards, where
 # they legitimately grow to fill whatever's left on the eMMC/SD card) - see
