@@ -38,15 +38,6 @@ part_dico = {"boot": {"A": "bootfs-a", "B": "bootfs-b"},
 
 boot_part_num_dico = {"A": 0, "B": 1}
 
-# root= is a literal /dev/mmcblkNpM path (see the machine conf's
-# UBOOT_EXTLINUX_ROOT comment for why PARTLABEL/PARTUUID don't work here) -
-# N (which device) never changes between A and B, only M (the partition
-# number) does. rootfs-a/rootfs-b are always partitions 10/11 on this
-# board's layout - update both this and the machine conf if that ever
-# changes on either device.
-rootfs_part_num_dico = {"A": 10, "B": 11}
-
-
 def mkdir(name):
     if not os.path.exists(name):
         try:
@@ -101,16 +92,31 @@ dirName = "%s/boot_%s" % (temp_mount_dir, next_boot_slot)
 mkdir(dirName)
 mount('%s%s' % (part_prefix, part_dico["boot"][next_boot_slot]), dirName, 'ext4')
 
-# "A" is the default configuration baked into the build.
+# "A" is the default configuration baked into the build - the bundle's
+# bootfs image content is always A-flavored regardless of which slot it's
+# being installed into. eMMC and SD card don't share partition numbering
+# (the SD card's extra fsbla1/fsbla2 partitions shift rootfs-a from p10 to
+# p12 there - see the machine conf's UBOOT_EXTLINUX_ROOT comment), so
+# rather than hardcode a device-specific pair of numbers, discover
+# whatever number is actually baked into this device's "A" config and
+# derive "B" as the very next partition (always true by construction: the
+# .wks.in/flashlayout always place rootfs-b immediately after rootfs-a on
+# both devices). No change is needed when next_boot_slot is "A" - the
+# bundle's content already matches, since it's always the A default.
+def _next_rootfs_partnum(match):
+    prefix, num = match.group(1), int(match.group(2))
+    if next_boot_slot == "B":
+        num += 1
+    return "%s%d" % (prefix, num)
+
+
 for root, dirs, files in os.walk("%s/" % dirName):
     for file in files:
         if file.endswith("extlinux.conf"):
             print("Updating: %s" % os.path.join(root, file))
             with fileinput.FileInput(os.path.join(root, file), inplace=True, backup='.bak') as f:
                 for line in f:
-                    x = re.sub(r'(root=/dev/mmcblk\d+p)%d\b' % rootfs_part_num_dico["A"],
-                               r'\g<1>%d' % rootfs_part_num_dico[next_boot_slot],
-                               line)
+                    x = re.sub(r'(root=/dev/mmcblk\d+p)(\d+)\b', _next_rootfs_partnum, line)
                     x = x.replace("rauc.slot=A", "rauc.slot=%s" % next_boot_slot)
                     print(x, end='')
 
