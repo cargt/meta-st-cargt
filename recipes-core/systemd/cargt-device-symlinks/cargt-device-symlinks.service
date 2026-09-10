@@ -1,0 +1,14 @@
+[Unit]
+Description=Create device-scoped partition symlinks (eMMC vs SD card)
+DefaultDependencies=no
+After=local-fs.target systemd-udev-settle.service
+Before=sysinit.target rauc.service
+Wants=systemd-udev-settle.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/cargt/cargt-device-symlinks.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target
