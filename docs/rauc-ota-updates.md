@@ -5,10 +5,14 @@
 > `stm32mp25-cargt-00395-02-00365`. It's being written up for
 > dev.cargt.com; a companion doc for the i.MX/SWUpdate side is planned once
 > that work happens. RAUC A/B updates are now verified working
-> end-to-end on **both** eMMC and SD card; the rollback-safety gap
-> (§2.5) is the one remaining open item — see "Testing status" at the
-> end before treating any specific claim as fully validated in
-> production.
+> end-to-end on **both** eMMC and SD card. The rollback-safety gap
+> (§2.5) previously documented here now has an implementation
+> (env-based `bootcount`/`bootlimit` rollback); **the per-attempt
+> watchdog-recovery half of this is now confirmed working on real
+> hardware, but the "fall back after N attempts" half is not yet
+> confirmed end-to-end** (a separate bug prevents `bootcount` from
+> persisting across the watchdog-triggered reset) — see §2.5 and
+> "Testing status" before describing this as fully fixed.
 
 ## 1. Overview
 
@@ -23,14 +27,18 @@ device switch over — which is real, verified protection against a
 partial/interrupted *write* (a copy that only ever half-installs can't
 end up selected as primary).
 
-**Important caveat, confirmed by testing (§2.5): automatic fallback if
-the new copy fails to *boot* is not yet implemented.** The A/B swap
-itself is solid — install, reboot, and slot-selection have all been
-exercised heavily and work reliably — but if a newly-installed bank fails
-to boot at all (bad kernel, corrupted bootfs, a crash before reaching a
-health checkpoint), nothing today automatically reverts to the previous
-good bank. That gap is real and documented, not a hypothetical edge case
-— see §2.5 before describing this system as fully self-healing.
+**Important caveat (§2.5): automatic fallback if the new copy fails to
+*boot* is partially confirmed.** The A/B swap itself is solid — install,
+reboot, and slot-selection have all been exercised heavily and work
+reliably. Rollback safety (env-based `bootcount`/`bootlimit`, §2.5) has
+been implemented and deployed; a real sabotage test (genuine `root=`
+corruption on the actually-read extlinux config) now reliably triggers a
+watchdog panic and clean reset within ~20-30s, confirmed 6 times in a
+row — but a separate bug prevents `bootcount` itself from persisting
+across that reset, so the "give up and switch banks after N attempts"
+behavior has not yet been observed working end-to-end. Do not describe
+this system as fully self-healing on a
+failed boot; that gap remains open despite the implementation attempt.
 
 ## 2. Theory of Operation
 
@@ -55,6 +63,10 @@ good bank. That gap is real and documented, not a hypothetical edge case
   application/user data that survives every OTA update untouched (grown to
   fill remaining eMMC/SD space on first boot — see §3.6).
 - **u-boot-env** — U-Boot's environment, single partition, not RAUC-managed.
+  One partition, but not a single point of failure for env writes: per
+  `fw_env.config`, it holds two redundant environment copies at different
+  offsets (`-0x4000` and `-0x2000`, `0x2000` each) — standard
+  `libubootenv` redundant-environment behavior.
 
 The `-b` slot of each A/B partition starts **empty** at first flash/build;
 it's populated by the very first `rauc install`.
@@ -98,45 +110,177 @@ eMMC — stay in sync automatically from this one file).
    the only thing tracking accept/trial state — nothing in the boot chain
    actually acts on it if a boot fails. See §2.5.**
 
-### 2.5 Known limitation: no automatic rollback on a failed boot
+### 2.5 Rollback safety: env-based bootcount (implemented; per-attempt recovery confirmed, fallback-after-N-attempts still open)
 
-**Confirmed on hardware — this is the most significant open gap in the
-current implementation.** The A/B mechanism correctly *selects* whichever
-bank was last committed via `set-primary`, and correctly records
-accept/trial state in FWU metadata — but if that bank then **fails to
-boot**, nothing automatically falls back to the previous good bank.
+**Original gap** (kept here for context): `set-primary` used to
+unconditionally, persistently rewrite `bootcmd` the moment `rauc install`
+finished — no countdown, no "try N times, then revert." If a
+newly-installed bank failed to boot at all, nothing automatically fell
+back to the previous good bank; confirmed live by simulating a missing
+kernel on an inactive bank and watching U-Boot fall through to its own
+interactive prompt with no recovery attempt.
 
-Verified by: on a known-good boot (bank A), mounting the *inactive* bank
-B's `bootfs-b` (safe — not the running bank) and renaming away its kernel
-`Image.gz` to simulate a broken OTA install; then, from the serial
-console, interactively (not persisted) simulating what `set-primary B`
-would leave behind. U-Boot correctly found `bootfs-b`'s `extlinux.conf`,
-failed to retrieve the now-missing `/Image.gz`
-(`EXTLINUX FAILED: continuing...`), fell through its EFI boot-manager
-path, and landed back at the interactive `STM32MP>` prompt — with **no**
-attempt to fall back to bank A. On real hardware, with nobody watching a
-serial console, the device would simply sit there.
+**Implementation** (`0007-enable-bootcount-env-for-ab-rollback-safety.patch`
++ a redesigned `st-boot-script.sh`):
 
-Root cause: `set-primary` unconditionally, persistently rewrites
-`bootcmd` via `fw_setenv` the moment `rauc install` finishes — there is
-no countdown or "try N times, then revert." U-Boot's own
-`bootcount`/`bootlimit`/`altbootcmd` primitives exist in the environment
-(added by the A/B U-Boot patch) but `bootlimit` is unset
-(`fw_printenv bootlimit` → empty), so they're never actually invoked.
-Separately, `get-primary`'s "accept" call isn't gated on any real health
-check — it fires on the first status query after boot, which may happen
-well before anything resembling a meaningful "did this update actually
-work" checkpoint.
+- `CONFIG_FWU_MULTI_BANK_UPDATE` is disabled. It was already enabled in
+  the defconfig, and U-Boot's generic autoboot logic
+  (`common/autoboot.c bootdelay_process()`) consults it ahead of the
+  plain bootcount mechanism whenever set — but stm32mp2 has no
+  `fwu_plat_get_bootidx()` implementation (unlike stm32mp1, which reads a
+  TAMP backup register also written by TF-A), so it falls through to a
+  weak default that resolves to "always run `bootcmd`" regardless of
+  actual bank state. Confirmed empirically on hardware (marker commands
+  in `bootcmd`/`altbootcmd`, full reset, autoboot left uninterrupted)
+  before disabling it — it was pure dead weight.
+- `CONFIG_BOOTCOUNT_LIMIT` + `CONFIG_BOOTCOUNT_ENV` are enabled instead —
+  U-Boot's generic, portable, environment-only bootcount backend
+  (`drivers/bootcount/bootcount_env.c`), no hardware register needed.
+- `st-boot-script.sh set-primary BOOTNAME` now sets **both** `bootcmd`
+  (the new bank) and `altbootcmd` (the other, current-good bank) as a
+  real pair, and arms the trial: `upgrade_available=1`, `bootcount=0`,
+  and explicitly `fw_setenv bootlimit 3` (matching TF-A's own
+  independent 4-try trial convention). Per `bootcount_env.c`, bootcount
+  only accumulates — and is only ever compared against `bootlimit` — while
+  `upgrade_available=1`, so a normal (non-trial) boot is unaffected.
+  **The explicit `fw_setenv bootlimit` call is not redundant with the
+  defconfig default**: a compiled-in default only populates a genuinely
+  fresh/reset environment, not one already persisted by an older U-Boot
+  build — any board provisioned before this feature existed would
+  otherwise silently have the safety net disabled forever. Making
+  `set-primary` set it explicitly every time makes the fix
+  self-installing regardless of when a given board's environment was
+  first created.
+- `st-boot-script.sh get-primary` is now a pure read-only query (just
+  reports the current bank from `/proc/cmdline`) — it no longer calls
+  `update_metadata.sh ... accept` itself, fixing a second, related issue
+  where "accept" used to fire on the first status query after boot,
+  before any real health checkpoint.
+- `st-boot-script.sh get-state` (invoked by `rauc-mark-good.service`
+  after a real health checkpoint) does the actual accept
+  (`update_metadata.sh ... accept`), resyncs `bootcmd`/`altbootcmd` to
+  whatever bank is *currently* running, and disarms
+  (`upgrade_available=0`, `bootcount=0`). This runs identically whether
+  the current bank is good because a fresh install succeeded, or because
+  U-Boot's own bootcount mechanism already fell back to it automatically
+  — either way, "whatever's running now" becomes the new baseline.
 
-**Practical effect**: today, "rollback safety" only covers TF-A/U-Boot
-correctly booting whichever bank was last committed — not recovering
-automatically from a bank that fails to boot at all. Fixing this
-requires an architectural change (wiring `bootcount`/`bootlimit` into
-`bootcmd_stm32mp` so `set-primary` arms a real retry-then-revert instead
-of committing unconditionally, or porting the "propagate boot index from
-TF-A" mechanism noted as landing in ecosystem-6.2 — this platform is on
-6.1) — not a same-session patch. Treat this as a known limitation until
-it's addressed.
+**A deployment gotcha worth knowing**: after changing `st-boot-script.sh`
+(or any file that ends up in a bundle), the bundle **must be rebuilt**
+before testing — a stale already-built `.raucb` will silently deploy old
+script content with no error. Confirmed the hard way: a bundle built
+before the `bootlimit` self-install fix landed was installed and tested
+for a while before the mismatch was caught (`md5sum` on the deployed
+`/usr/lib/rauc/st-boot-script.sh` vs. the local source file disagreed,
+and `fw_printenv bootlimit` came back empty even after `set-primary`
+ran). Also note each bank's rootfs regenerates its own SSH host key on
+its first boot after being freshly installed — expect (and ignore) an
+SSH "REMOTE HOST IDENTIFICATION HAS CHANGED" warning the first time you
+connect to a bank right after installing a bundle into it; it is not a
+MITM concern, just a fresh-image artifact (`ssh-keygen -R <host>` before
+reconnecting, or use `-o StrictHostKeyChecking=accept-new` while testing).
+
+**Testing gotcha specific to eMMC**: every `bootfs-a`/`bootfs-b` image
+carries *two* extlinux config directories, `mmc0_extlinux/` (SD-card
+literal `root=`) and `mmc1_extlinux/` (eMMC literal `root=`) — see §2.6.
+On an eMMC-booting board, `mmc0_extlinux/extlinux.conf` is completely
+dormant; U-Boot's `boot_prefixes` env resolves to `/mmc1_` and never
+reads it. Editing `mmc0_extlinux/extlinux.conf`'s `root=` to simulate a
+bad boot on eMMC is a silent no-op — the corruption never reaches the
+kernel cmdline. (Traced directly in `boot/pxe_utils.c label_boot()`:
+there is no `root=`-specific substitution logic anywhere in U-Boot — the
+`APPEND` line is used verbatim as `bootargs` after only `${var}` macro
+expansion. The device/partition-number "correction" seen when comparing
+a bank's `mmc0_extlinux` content to its actual booted cmdline is not a
+runtime substitution at all — it's two independently-baked,
+independently-patched files that simply never get reconciled against
+each other.) Any failure-injection test on eMMC must edit
+`mmc1_extlinux/extlinux.conf`.
+
+**Status as of this writing**: implemented and deployed to both eMMC
+banks (`bootlimit=3` confirmed armed). A live sabotage test — corrupt the
+inactive bank's real `root=` (via `mmc1_extlinux` on eMMC / `mmc0_extlinux`
+on SD card, whichever the board actually reads), arm the trial via
+`set-primary`, reboot, and watch for automatic fallback to the other bank
+after `bootlimit` failed attempts — **initially failed on both eMMC and
+SD card**: the board went completely network-unreachable (not just
+SSH-unreachable) for many minutes with no recovery, versus the ~30-40s a
+working watchdog-reset cycle should take, and needed a physical
+power-cycle each time.
+
+**Root cause #1, found via a direct A/B test with live serial console
+observation both times**: rebuilt U-Boot with patch 0007 (this section's
+own bootcount mechanism) entirely removed, verified via `strings` on the
+raw compiled binary that `CONFIG_BOOTCOUNT_LIMIT` was genuinely not
+compiled in, flashed that binary into the SD card's active FIP slot, and
+reproduced the identical sabotage against it. **The old, unmodified
+U-Boot hung identically** — ruling out patch 0007 itself as the cause.
+(Build-system note: getting a genuinely reverted test artifact required
+cleansstating and rebuilding `fip-stm32mp` specifically, not just
+`u-boot-stm32mp`/`tf-a-stm32mp` — `fip-stm32mp.bb` is a separate recipe
+that assembles the final FIP and wasn't being invalidated by rebuilding
+the other two, producing misleading "still broken" results on the first
+two attempts.)
+
+**Root cause #2, found via source investigation (`drivers/watchdog/arm_smc_wdt.c`,
+kernel `.config`)**: `CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED=y` (an upstream
+Linux default, not set by any of this project's own kernel config
+fragments) makes the kernel's generic watchdog core detect that U-Boot
+already armed the hardware watchdog and auto-feed it **in-kernel**,
+independent of userspace, until systemd opens `/dev/watchdog`
+(`RuntimeWatchdogSec=32`) and takes real ownership. Since our sabotage
+hang happens in the initrd — before systemd ever starts — the kernel
+just kept silently feeding the watchdog through the entire hang,
+forever. **Fixed** by adding
+`# CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED is not set` to
+`cargt_rauc_kernel_config_mods.config` (gated on the RAUC feature, since
+a non-RAUC board doesn't need this behavior changed). **Confirmed working
+on real hardware**: after deploying the fixed kernel, the identical
+corrupted-`root=` sabotage now reliably triggers
+`E/TC Panic 'Watchdog' at .../stm32_iwdg_it_handler` (OP-TEE's own
+watchdog IRQ handler — the same recovery signature previously only seen
+for post-systemd crashes) roughly 20-30s into the hang, followed by a
+clean reset and automatic retry. Reproduced 6 times in a row without a
+single miss.
+
+**Root cause #3 (found along the way, also fixed): a U-Boot autoboot
+partition-scan bug, unrelated to rollback-safety but blocking this exact
+test.** `distro_bootpart` (`include/config_distro_bootcmd.h`'s
+`scan_dev_for_boot_part`) is left at whatever value a scan attempt last
+computed it to and is never reset — only `devplist` gets cleared at the
+end of that macro. A previous interactive session's leftover value
+persists across power cycles (once written to flash, e.g. by this
+board's `env_check` autosave, or an explicit `saveenv`) and gets
+incremented further by the A/B `+1` adjustment on top of an already-wrong
+base, drifting the "selected" partition further from the real bootfs
+partitions (6/7) with each affected boot — observed landing on 8, then
+9-and-10, in two different sessions. **Workaround/fix**:
+`setenv distro_bootpart` (clear it) then `saveenv` — confirmed this
+alone restores correct automatic scanning indefinitely afterward. A
+proper patch would have `scan_dev_for_boot_part` clear
+`distro_bootpart` itself the same way it already clears `devplist`.
+
+**Root cause #4 (open, blocking full end-to-end confirmation): the
+automatic per-boot `bootcount` increment does not persist across a hard
+(watchdog-triggered) reset.** `drivers/bootcount/bootcount_env.c`'s
+`bootcount_store()` does call `env_save()` unconditionally whenever
+`upgrade_available=1` (confirmed true throughout testing) — so per
+source, each boot's increment *should* survive a reset. Empirically, it
+does not: `bootcount` was directly observed staying at a fixed manually-set
+value (`2`) across two further automatic hang → watchdog-panic → reset
+cycles that should have advanced it to 3 and then 4. A control test
+proved the underlying persist mechanism itself works fine — manually
+`setenv bootcount 2; saveenv` correctly round-tripped through a hard
+reset — so this is specifically about the *automatic* in-boot increment
+path not reaching flash, not a general environment-write problem. Likely
+related to this board's redundant-environment (two-copy) scheme somehow
+not picking up the automatic write, but not yet root-caused. **Practical
+effect**: `bootcount` never actually exceeds `bootlimit`, so the
+automatic fallback to the other bank after N failed attempts has not yet
+been observed working end-to-end, even though the underlying
+per-attempt watchdog-reset recovery (root cause #2's fix) is now solidly
+confirmed. This is the one remaining piece before rollback-safety can be
+called fully working.
 
 ### 2.3 Update flow (what `rauc install` actually does)
 
@@ -304,6 +448,7 @@ RAUC A/B OTA update cycle confirmed working on the SD card.
 |---|---|
 | `conf/distro/cargt-openstlinux-weston.conf` | `DISTRO_FEATURES += "gplv3 rauc"` — gates every RAUC-conditional recipe/patch below |
 | `recipes-bsp/u-boot/u-boot-stm32mp/0006-stm32mpu-update-env-to-support-boot-A-B.patch` | Adds `altboot`/`altbootcmd` env vars to the stm32mp defconfig (ported from ST's `meta-st-ota`) |
+| `recipes-bsp/u-boot/u-boot-stm32mp/0007-enable-bootcount-env-for-ab-rollback-safety.patch` | Disables the (confirmed-inert) `CONFIG_FWU_MULTI_BANK_UPDATE`, enables `CONFIG_BOOTCOUNT_LIMIT`/`CONFIG_BOOTCOUNT_ENV` — the actual rollback-safety mechanism (§2.5) |
 | `recipes-bsp/trusted-firmware-a/tf-a-stm32mp/0002-add-logs-for-demo-purpose.patch` | NOTICE-level bank-selection logging, for visibility during bring-up |
 | `recipes-kernel/linux/linux-stm32mp/6.6/cargt_rauc_kernel_config_mods.config` | `CONFIG_BLK_DEV_LOOP`, `CONFIG_SQUASHFS`, `CONFIG_MD`, `CONFIG_BLK_DEV_DM`, `CONFIG_BLK_DEV_NBD`, `CONFIG_DM_VERITY`, `CONFIG_CRYPTO_SHA256` — required for RAUC's dm-verity bundle format |
 | `recipes-core/rauc/rauc_%.bbappend` + `files/0001-support-bin-extension.patch` | Patches RAUC's `update_handler.c` so it accepts `*.bin` images as `raw` slot type (needed for the fip binary) |
@@ -386,6 +531,50 @@ Verified on hardware: the marker's mtime is unchanged across a second
 fresh-slot install, confirming the guarded growfs call is actually
 skipped the second time, not just logged as if it were.
 
+### 3.7 Known issue (separate from rollback-safety): autoboot partition scan drifts to the wrong partition
+
+**Found during rollback-safety testing, root-caused and worked around -
+flagging clearly since it affects normal automatic booting, not just
+A/B rollback.** On several occasions, neither persisted `bootcmd`
+variant ("Boot A" nor "Boot B") could automatically reach its real
+bootfs partition via the normal distro-boot flow
+(`scan_dev_for_boot_part` -> `scan_dev_for_boot` in
+`include/config_distro_bootcmd.h`) - instead landing on whatever
+partition was one or two past the correct one (`vendorfs-a`/`vendorfs-b`
+instead of `bootfs-a`/`bootfs-b`) and ultimately failing ("BootOrder not
+defined", "EFI boot manager: Cannot load any image"), dropping to the
+interactive U-Boot prompt.
+
+**Root cause**: `scan_dev_for_boot_part`'s `distro_bootpart` variable is
+never reset - only `devplist` gets cleared
+(`"setenv devplist\0"`) at the end of that macro; `distro_bootpart`
+itself is left holding whatever the last scan attempt computed. Once a
+stale value gets written to the persisted environment (e.g. via this
+board's `env_check` autosave, or an explicit `saveenv` during
+interactive debugging), it survives power cycles and gets pushed further
+by the A/B `+1` adjustment (`if test ${altboot} = 1; then setexpr
+distro_bootpart ${distro_bootpart} + 1; fi;`) applied on top of an
+already-wrong base, drifting the "selected" partition further from the
+real bootfs partitions (6/7) with each affected boot - observed landing
+on 8 in one session, then 9-and-10 in a later one, with `devplist`
+independently confirmed correct (`6 7`) throughout.
+
+**Confirmed fix**: `setenv distro_bootpart` (clear it, no value) then
+`saveenv` at the U-Boot prompt. Verified this restores correct automatic
+scanning (`Found /mmc1_extlinux/extlinux.conf`, proceeds to boot
+normally) and stays fixed across multiple subsequent boots - the
+persisted clear sticks. A proper upstream-style patch would have
+`scan_dev_for_boot_part` clear `distro_bootpart` itself at the end of
+the loop the same way it already clears `devplist`, so a stale value
+can never accumulate in the first place; not yet implemented as a real
+patch in this layer.
+
+Workaround if a device gets stuck at the U-Boot prompt from this before
+the above fix is applied: a fully manual boot (`ext4load` the
+kernel/dtb/initrd from the correct bootfs partition directly, set
+`bootargs` by hand, then `booti`) reliably recovers the device without
+needing a reflash.
+
 ## 4. Examples
 
 ### 4.1 Build
@@ -447,6 +636,27 @@ fw_printenv bootcmd altbootcmd altboot bootcount
   persist; this is the "no automatic TF-A→U-Boot hand-off" gap described
   in §2.2 — the fix lives entirely in `st-boot-script.sh`'s `set-primary`
   handler, so start there.
+- **Deployed `st-boot-script.sh` doesn't match the local source file**:
+  the bundle wasn't rebuilt after the last edit. Compare
+  `md5sum /usr/lib/rauc/st-boot-script.sh` on target against the local
+  `recipes-core/rauc/files/st-boot-script.sh` before trusting any live
+  test result — a stale bundle installs old script content with no
+  error or warning of any kind.
+- **`fw_printenv bootlimit` comes back empty even after `set-primary`
+  ran**: see §2.5 — a compiled-in defconfig default for `bootlimit` does
+  not retroactively populate an environment already persisted by an
+  older U-Boot build. `set-primary` sets it explicitly for exactly this
+  reason; if it's still empty, the deployed script predates that fix
+  (see the previous bullet).
+- **SSH "REMOTE HOST IDENTIFICATION HAS CHANGED" right after an
+  install+reboot**: expected — the freshly-installed bank's rootfs
+  regenerates its own SSH host key on first boot. Not a MITM concern.
+  `ssh-keygen -R <DUT-IP>` before reconnecting, or use
+  `-o StrictHostKeyChecking=accept-new` while iterating on a bench DUT.
+- **Simulating a bad boot on eMMC by editing `extlinux.conf`'s `root=`
+  has no effect**: make sure you edited `mmc1_extlinux/extlinux.conf`,
+  not `mmc0_extlinux/extlinux.conf` — see §2.5/§2.6. The latter is
+  completely dormant on an eMMC-booting board; U-Boot never reads it.
 
 ## Testing status
 
@@ -460,10 +670,35 @@ fw_printenv bootcmd altbootcmd altboot bootcount
   marker written to `userfs` on first grow is correctly left untouched
   (same mtime) across a subsequent fresh-slot OTA install, confirming the
   guarded resize call is actually skipped the second time.
-- **Rollback-on-failed-boot:** **FAIL — confirmed gap, not yet fixed.**
-  See §2.5. This is the most significant finding from this round of
-  testing and should be treated as a known limitation, not a corner case,
-  until addressed.
+- **Rollback-on-failed-boot:** **PARTIAL PASS — per-attempt watchdog
+  recovery confirmed working; automatic fallback after N attempts not
+  yet confirmed end-to-end.** See §2.5 for the full history (four
+  distinct root causes found and mostly fixed). Summary:
+  - Patch 0007 / the bootcount U-Boot mechanism was **ruled out** as the
+    cause of the original hang-forever regression (A/B test against an
+    unmodified U-Boot reproduced the identical hang).
+  - The real cause was `CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED=y` letting
+    the kernel silently auto-feed the watchdog through any pre-systemd
+    hang. **Fixed and confirmed on real hardware**: the identical
+    corrupted-`root=` sabotage now reliably triggers a watchdog panic
+    and clean reset ~20-30s into the hang — reproduced 6 times in a row
+    without a miss.
+  - A separate, unrelated U-Boot autoboot partition-scan bug
+    (`distro_bootpart` never resets, drifting to the wrong partition
+    across boots) was found and fixed (`setenv distro_bootpart;
+    saveenv`) — this was blocking automatic retries, not a
+    rollback-safety defect itself.
+  - **Still open**: the automatic per-boot `bootcount` increment does
+    not persist across a *hard* (watchdog-triggered) reset, even though
+    `bootcount_store()` calls `env_save()` unconditionally when
+    `upgrade_available=1`. A manual `setenv bootcount N; saveenv` proves
+    the underlying persist mechanism works fine — this is specifically
+    about the automatic in-boot increment not reaching flash. Until this
+    is fixed, `bootcount` never exceeds `bootlimit`, so the "fall back to
+    the other bank after N attempts" half of rollback-safety has not yet
+    been observed working, even though the underlying per-attempt
+    recovery now demonstrably works. The A/B swap-on-successful-boot
+    behavior (§1) is unaffected and remains solid throughout.
 - **u-boot-env partition naming:** bug found and fixed before first SD
   card flash — see §3.3 — the SD card's `.wks.in` used `uboot-env`
   (no dash) where eMMC and every consumer expect `u-boot-env`.
