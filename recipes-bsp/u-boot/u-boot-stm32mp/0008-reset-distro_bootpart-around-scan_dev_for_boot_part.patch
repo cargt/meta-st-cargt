@@ -1,0 +1,74 @@
+From: CARGT <engineering@cargt.com>
+Subject: [PATCH] distro_bootcmd: reset distro_bootpart around scan_dev_for_boot_part
+
+scan_dev_for_boot_part iterates `distro_bootpart` over `${devplist}`
+(the GPT-attribute-derived list of bootable partitions), mutating it
+in place via the A/B `altboot` offset added by
+0006-stm32mpu-update-env-to-support-boot-A-B.patch:
+
+    "if test ${altboot} = 1;then setexpr distro_bootpart ${distro_bootpart} + 1; fi;"
+
+Confirmed on hardware: if `distro_bootpart` already holds a stale value
+from a previous scan when this macro starts - whether persisted across
+a reboot (e.g. via this board's `env_check` autosave, or an explicit
+`saveenv` during interactive debugging) or simply left over in the
+live environment - the `for distro_bootpart in ${devplist}; do ... fi;
+done` loop uses that stale value for its first pass instead of
+`${devplist}`'s real first element, and the `${devtype}:${distro_bootpart}`
+substitutions inside the loop body resolve against it directly. This
+reproduces even on a single, otherwise completely correct scan attempt
+with `devplist` verified correct throughout (confirmed via a live `part
+list ${devtype} ${devnum} -bootable devplist` recomputation) - it is
+not limited to the multi-boot "+1 compounds on an already-wrong base"
+drift this same stale value also causes. A clear at the *end* of the
+loop (guarding the *next* invocation) is therefore necessary but not
+sufficient on its own; the loop also needs a clean slate on entry so a
+value some earlier context left behind can't be used as-is for the
+first iteration.
+
+Clears `distro_bootpart` both immediately before the loop starts and
+after it ends (mirroring how `devplist` is already reset at the end),
+so every invocation of scan_dev_for_boot_part is guaranteed to compute
+`distro_bootpart` fresh from `${devplist}` on its very first iteration,
+regardless of what either variable held on entry.
+
+Confirmed as a real, reproducible bug and fix on hardware: with only
+the end-of-loop clear in place, deliberately persisting a stale
+`distro_bootpart` (`setenv distro_bootpart 99; saveenv`) and then doing
+a genuine hard reset still reproduced the wrong-partition scan
+("Couldn't find partition mmc 1:99") on the very next boot. Adding the
+before-the-loop clear as well and repeating the identical test (stale
+value persisted, hard reset) resulted in a fully correct boot.
+
+Upstream-Status: Pending [not sent upstream to ST - see
+docs/rauc-ota-updates.md 3.7 for the full investigation]
+
+Signed-off-by: CARGT Engineering <engineering@cargt.com>
+---
+ include/config_distro_bootcmd.h | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/include/config_distro_bootcmd.h b/include/config_distro_bootcmd.h
+index a95f57141ad..3f2ba1e6a4b 100644
+--- a/include/config_distro_bootcmd.h
++++ b/include/config_distro_bootcmd.h
+@@ -540,6 +540,7 @@
+ 	"scan_dev_for_boot_part="                                         \
+ 		"part list ${devtype} ${devnum} -bootable devplist; "     \
+ 		"env exists devplist || setenv devplist 1; "              \
++		"setenv distro_bootpart; "                                \
+ 		"for distro_bootpart in ${devplist}; do "                 \
+ 		"if test ${altboot} = 1;then setexpr distro_bootpart ${distro_bootpart} + 1; fi;" \
+ 			"if fstype ${devtype} "                           \
+@@ -551,7 +552,8 @@
+ 				"run scan_dev_for_boot; "                 \
+ 			"fi; "                                            \
+ 		"done; "                                                  \
+-		"setenv devplist\0"					  \
++		"setenv devplist; "					  \
++		"setenv distro_bootpart\0"				  \
+ 	\
+ 	BOOT_TARGET_DEVICES(BOOTENV_DEV)                                  \
+ 	\
+--
+2.34.1

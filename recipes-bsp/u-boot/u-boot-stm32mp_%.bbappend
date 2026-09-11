@@ -6,6 +6,7 @@ SRC_URI += "file://0002-Autosave-env-when-defaults-are-set.patch \
             file://0005-stm32mp2-Add-missing-STM32MP255-cases-to-get_eth_nb.patch \
             file://0006-stm32mpu-update-env-to-support-boot-A-B.patch \
             file://0007-enable-bootcount-env-for-ab-rollback-safety.patch \
+            file://0008-reset-distro_bootpart-around-scan_dev_for_boot_part.patch \
             "
 
 # Per-machine fdtfile default: MACHINE-keyed (not MACHINE_FEATURES-keyed, which
