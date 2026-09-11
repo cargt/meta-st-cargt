@@ -814,6 +814,16 @@ fw_printenv bootcmd altbootcmd altboot bootcount
     `bootcount=0` correctly disarmed by `rauc-mark-good`. The A/B
     swap-on-successful-boot behavior (§1) remains solid throughout, as
     it always has been.
+  - **Repeated and confirmed on `00395-01-00365`** (same sabotage
+    method: bank B's `root=` pointed at a nonexistent partition):
+    live serial console captured a real `Panic 'Watchdog'` during a
+    failed Boot B attempt and `Bootlimit (3) exceeded. Using
+    altbootcmd`, and the board fell back to bank A with `bootcmd`/
+    `altbootcmd` resynced and `bootcount`/`upgrade_available` cleared —
+    same result as the primary board. After restoring the correct
+    `root=` value, bank B booted cleanly again on the very next
+    attempt, confirming the sabotage/recovery cycle leaves no lasting
+    damage.
 - **Autoboot partition-scan drift: PASS (fixed).** See §3.7 — a real
   patch (`0008-reset-distro_bootpart-around-scan_dev_for_boot_part.patch`)
   now clears `distro_bootpart` both before and after
