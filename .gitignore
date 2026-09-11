@@ -1,1 +1,3 @@
 .vscode-tags
+.claude/
+__pycache__/
