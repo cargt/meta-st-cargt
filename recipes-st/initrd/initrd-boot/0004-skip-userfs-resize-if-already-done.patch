@@ -1,0 +1,117 @@
+From: CARGT <engineering@cargt.com>
+Subject: [PATCH] init-resize: skip userfs resize if already done
+
+This script's own "already resized" guard (a marker file at
+$ROOTFS_DIR/etc/.resized) lives inside whichever rootfs is currently
+booting, gating the *entire* loop over userfs/vendorfs/bootfs/rootfs -
+so on a RAUC A/B board it doesn't protect userfs the way it's meant
+to: rootfs/vendorfs/bootfs are already fixed-size A/B slots skipped
+unconditionally (see 0002), but userfs is a single partition shared
+across both banks, and a fresh rootfs bank has never had a chance to
+create /etc/.resized. The result: every OTA update's first boot into
+the newly-installed bank re-runs a full e2fsck -c bad-blocks scan
+(plus resize2fs) against userfs, even though userfs itself was
+already grown to its full size on the very first boot, long before
+this bank existed.
+
+Confirmed on hardware (stm32mp25-cargt-00395-01-00365): this full scan
+against a ~22GB userfs took minutes - far longer than OP-TEE's own
+watchdog (stm32_iwdg) tolerates before it panics and resets the SoC.
+Since this happens in the resize initramfs, before the kernel proper
+or systemd-journald ever starts, the reset left no journal or pstore
+trace - it looked identical to an unexplained early-boot hang. It
+recurred on every boot attempt into the freshly-installed bank
+(3 times, exhausting bootcount) before U-Boot's rollback-safety logic
+correctly fell back to the previous good bank.
+
+resize-helper.service (the later, systemd-stage resize path) already
+solved this exact problem for itself with a marker file resident on
+userfs (/usr/local/.resize-helper-done - see resize-helper's own
+0003-skip-userfs-resize-if-already-done.patch), which survives an OTA
+update to either rootfs bank because it lives on the shared partition,
+not inside rootfs. Give init-resize.sh's userfs case the same
+protection: mount the userfs device long enough to check for that
+marker (the same relative path, since /usr/local is exactly where
+userfs is later mounted), skip the fsck+resize entirely if present,
+and write the marker on userfs after resizing it here so a fresh
+board's very first boot doesn't rely on resize-helper.service running
+afterward to do it - either script can now set (and both respect) the
+one shared marker.
+
+Upstream-Status: Pending [not sent upstream to ST - specific to a
+custom A/B partition scheme]
+
+--- a/init-resize.sh
++++ b/init-resize.sh
+@@ -40,22 +40,55 @@
+                             if [ $? -eq 0 ]; then
+                                 case $label in
+                                 user*)
+-                                    echo "RESIZE USERFS [$DEVICE]"
+-                                    # A single e2fsck pass isn't enough on a
+-                                    # never-before-checked filesystem: when it
+-                                    # actually fixes something (common on a
+-                                    # fresh image's very first real check,
+-                                    # reported as "FILE SYSTEM WAS MODIFIED"),
+-                                    # resize2fs refuses to run against it
+-                                    # ("Please run 'e2fsck -f' first") even
+-                                    # though e2fsck just ran - it wants a
+-                                    # subsequent CLEAN pass before trusting
+-                                    # the filesystem enough to resize it. Run
+-                                    # a second, fast recheck (no -c bad-blocks
+-                                    # rescan needed) to satisfy that.
+-                                    /sbin/e2fsck -f -y -c -C 0 $DEVICE
+-                                    /sbin/e2fsck -f -y -C 0 $DEVICE
+-                                    /sbin/resize2fs $DEVICE
++                                    # userfs is shared across both RAUC A/B
++                                    # rootfs banks, but the $ROOTFS_DIR/etc/
++                                    # .resized marker gating this whole loop
++                                    # lives inside whichever rootfs is
++                                    # currently booting - a freshly OTA-
++                                    # installed bank has never set it, so
++                                    # without its own check userfs's full
++                                    # e2fsck -c bad-blocks scan re-runs on
++                                    # every OTA update's first boot into the
++                                    # new bank, even though userfs was
++                                    # already grown on the very first boot
++                                    # long before that bank existed. Check
++                                    # the same marker resize-helper.service
++                                    # uses post-boot (a file resident on
++                                    # userfs itself, so it survives an OTA
++                                    # update to either bank) before doing
++                                    # any of this.
++                                    userfs_already_resized=0
++                                    mkdir -p /tmp/userfs-check
++                                    if mount -o ro $DEVICE /tmp/userfs-check 2> /dev/null; then
++                                        [ -f /tmp/userfs-check/.resize-helper-done ] && userfs_already_resized=1
++                                        umount /tmp/userfs-check
++                                    fi
++                                    rmdir /tmp/userfs-check 2> /dev/null
++                                    if [ "$userfs_already_resized" = "1" ]; then
++                                        echo "SKIP USERFS [$DEVICE] (already resized)"
++                                    else
++                                        echo "RESIZE USERFS [$DEVICE]"
++                                        # A single e2fsck pass isn't enough on a
++                                        # never-before-checked filesystem: when it
++                                        # actually fixes something (common on a
++                                        # fresh image's very first real check,
++                                        # reported as "FILE SYSTEM WAS MODIFIED"),
++                                        # resize2fs refuses to run against it
++                                        # ("Please run 'e2fsck -f' first") even
++                                        # though e2fsck just ran - it wants a
++                                        # subsequent CLEAN pass before trusting
++                                        # the filesystem enough to resize it. Run
++                                        # a second, fast recheck (no -c bad-blocks
++                                        # rescan needed) to satisfy that.
++                                        /sbin/e2fsck -f -y -c -C 0 $DEVICE
++                                        /sbin/e2fsck -f -y -C 0 $DEVICE
++                                        /sbin/resize2fs $DEVICE
++                                        mkdir -p /tmp/userfs-mark
++                                        mount $DEVICE /tmp/userfs-mark
++                                        touch /tmp/userfs-mark/.resize-helper-done
++                                        umount /tmp/userfs-mark
++                                        rmdir /tmp/userfs-mark
++                                    fi
+                                     ;;
+                                 root*)
+                                     echo "SKIP ROOTFS [$DEVICE] (fixed-size A/B slot)"
