@@ -255,11 +255,11 @@ board's `env_check` autosave, or an explicit `saveenv`) and gets
 incremented further by the A/B `+1` adjustment on top of an already-wrong
 base, drifting the "selected" partition further from the real bootfs
 partitions (6/7) with each affected boot — observed landing on 8, then
-9-and-10, in two different sessions. **Workaround/fix**:
-`setenv distro_bootpart` (clear it) then `saveenv` — confirmed this
-alone restores correct automatic scanning indefinitely afterward. A
-proper patch would have `scan_dev_for_boot_part` clear
-`distro_bootpart` itself the same way it already clears `devplist`.
+9-and-10, in two different sessions. **Fixed** by
+`0008-reset-distro_bootpart-around-scan_dev_for_boot_part.patch` —
+see §3.7 for the full account, including a subtlety found while fixing
+it (a stale value present when the loop *starts* also needs clearing,
+not just one left behind when it ends).
 
 **A "root cause #4" was initially suspected here and turned out to be a
 false lead worth recording as a cautionary tale, not a real bug**: an
@@ -454,6 +454,7 @@ RAUC A/B OTA update cycle confirmed working on the SD card.
 | `conf/distro/cargt-openstlinux-weston.conf` | `DISTRO_FEATURES += "gplv3 rauc"` — gates every RAUC-conditional recipe/patch below |
 | `recipes-bsp/u-boot/u-boot-stm32mp/0006-stm32mpu-update-env-to-support-boot-A-B.patch` | Adds `altboot`/`altbootcmd` env vars to the stm32mp defconfig (ported from ST's `meta-st-ota`) |
 | `recipes-bsp/u-boot/u-boot-stm32mp/0007-enable-bootcount-env-for-ab-rollback-safety.patch` | Disables the (confirmed-inert) `CONFIG_FWU_MULTI_BANK_UPDATE`, enables `CONFIG_BOOTCOUNT_LIMIT`/`CONFIG_BOOTCOUNT_ENV` — the actual rollback-safety mechanism (§2.5) |
+| `recipes-bsp/u-boot/u-boot-stm32mp/0008-reset-distro_bootpart-around-scan_dev_for_boot_part.patch` | Fixes the autoboot partition-scan drift bug (§3.7) — clears `distro_bootpart` before and after `scan_dev_for_boot_part`'s loop |
 | `recipes-bsp/trusted-firmware-a/tf-a-stm32mp/0002-add-logs-for-demo-purpose.patch` | NOTICE-level bank-selection logging, for visibility during bring-up |
 | `recipes-kernel/linux/linux-stm32mp/6.6/cargt_rauc_kernel_config_mods.config` | `CONFIG_BLK_DEV_LOOP`, `CONFIG_SQUASHFS`, `CONFIG_MD`, `CONFIG_BLK_DEV_DM`, `CONFIG_BLK_DEV_NBD`, `CONFIG_DM_VERITY`, `CONFIG_CRYPTO_SHA256` — required for RAUC's dm-verity bundle format |
 | `recipes-core/rauc/rauc_%.bbappend` + `files/0001-support-bin-extension.patch` | Patches RAUC's `update_handler.c` so it accepts `*.bin` images as `raw` slot type (needed for the fip binary) |
@@ -536,10 +537,11 @@ Verified on hardware: the marker's mtime is unchanged across a second
 fresh-slot install, confirming the guarded growfs call is actually
 skipped the second time, not just logged as if it were.
 
-### 3.7 Known issue (separate from rollback-safety): autoboot partition scan drifts to the wrong partition
+### 3.7 Fixed: autoboot partition scan drifted to the wrong partition
 
-**Found during rollback-safety testing, root-caused and worked around -
-flagging clearly since it affects normal automatic booting, not just
+**Found during rollback-safety testing and fixed by
+`0008-reset-distro_bootpart-around-scan_dev_for_boot_part.patch`
+- flagging clearly since it affected normal automatic booting, not just
 A/B rollback.** On several occasions, neither persisted `bootcmd`
 variant ("Boot A" nor "Boot B") could automatically reach its real
 bootfs partition via the normal distro-boot flow
@@ -551,34 +553,45 @@ defined", "EFI boot manager: Cannot load any image"), dropping to the
 interactive U-Boot prompt.
 
 **Root cause**: `scan_dev_for_boot_part`'s `distro_bootpart` variable is
-never reset - only `devplist` gets cleared
-(`"setenv devplist\0"`) at the end of that macro; `distro_bootpart`
-itself is left holding whatever the last scan attempt computed. Once a
-stale value gets written to the persisted environment (e.g. via this
-board's `env_check` autosave, or an explicit `saveenv` during
-interactive debugging), it survives power cycles and gets pushed further
-by the A/B `+1` adjustment (`if test ${altboot} = 1; then setexpr
-distro_bootpart ${distro_bootpart} + 1; fi;`) applied on top of an
-already-wrong base, drifting the "selected" partition further from the
-real bootfs partitions (6/7) with each affected boot - observed landing
-on 8 in one session, then 9-and-10 in a later one, with `devplist`
-independently confirmed correct (`6 7`) throughout.
+never reset - only `devplist` was cleared (`"setenv devplist\0"`) at the
+end of that macro; `distro_bootpart` itself was left holding whatever
+the last scan attempt computed. Once a stale value gets written to the
+persisted environment (e.g. via this board's `env_check` autosave, or an
+explicit `saveenv` during interactive debugging), it survives power
+cycles and gets pushed further by the A/B `+1` adjustment (`if test
+${altboot} = 1; then setexpr distro_bootpart ${distro_bootpart} + 1;
+fi;`) applied on top of an already-wrong base, drifting the "selected"
+partition further from the real bootfs partitions (6/7) with each
+affected boot - observed landing on 8 in one session, then 9-and-10 in
+a later one, with `devplist` independently confirmed correct (`6 7`)
+throughout.
 
-**Confirmed fix**: `setenv distro_bootpart` (clear it, no value) then
-`saveenv` at the U-Boot prompt. Verified this restores correct automatic
-scanning (`Found /mmc1_extlinux/extlinux.conf`, proceeds to boot
-normally) and stays fixed across multiple subsequent boots - the
-persisted clear sticks. A proper upstream-style patch would have
-`scan_dev_for_boot_part` clear `distro_bootpart` itself at the end of
-the loop the same way it already clears `devplist`, so a stale value
-can never accumulate in the first place; not yet implemented as a real
-patch in this layer.
+An important subtlety found while fixing this: clearing
+`distro_bootpart` only at the *end* of the loop (guarding the *next*
+scan) is not sufficient by itself. A stale value already present when
+the loop *starts* gets used as-is for the very first iteration instead
+of `${devplist}`'s real first element - reproduced even on a single,
+otherwise-correct scan with `devplist` verified correct throughout. The
+loop needs a clean slate on entry too, not just a guarantee that it
+leaves one behind.
 
-Workaround if a device gets stuck at the U-Boot prompt from this before
-the above fix is applied: a fully manual boot (`ext4load` the
-kernel/dtb/initrd from the correct bootfs partition directly, set
-`bootargs` by hand, then `booti`) reliably recovers the device without
-needing a reflash.
+**Fix**: `distro_bootpart` is now cleared both immediately before the
+loop starts and after it ends, so every invocation of
+`scan_dev_for_boot_part` computes it fresh from `${devplist}` on its
+very first iteration regardless of what either variable held on entry.
+Confirmed on hardware with a rigorous before/after test: deliberately
+persisted a stale `distro_bootpart` (`setenv distro_bootpart 99;
+saveenv`) followed by a genuine hard `reset` reliably reproduced the
+wrong-partition scan with only the end-of-loop clear in place; adding
+the before-the-loop clear and repeating the identical test resulted in
+a fully correct boot, verified through the real build pipeline (not
+just a live interactive env edit) by rebuilding `u-boot-stm32mp` and
+`fip-stm32mp` from the patched source and redeploying before retesting.
+
+Workaround if an unpatched device gets stuck at the U-Boot prompt from
+this: a fully manual boot (`ext4load` the kernel/dtb/initrd from the
+correct bootfs partition directly, set `bootargs` by hand, then
+`booti`) reliably recovers the device without needing a reflash.
 
 ## 4. Examples
 
@@ -688,8 +701,9 @@ fw_printenv bootcmd altbootcmd altboot bootcount
     and clean reset ~20-30s into the hang.
   - A separate, unrelated U-Boot autoboot partition-scan bug
     (`distro_bootpart` never resets, drifting to the wrong partition
-    across boots) was found and fixed (`setenv distro_bootpart;
-    saveenv`) — this was blocking automatic retries, not a
+    across boots) was found and fixed with a real patch
+    (`0008-reset-distro_bootpart-around-scan_dev_for_boot_part.patch`,
+    see §3.7) — this was blocking automatic retries, not a
     rollback-safety defect itself.
   - A "root cause #4" (bootcount not persisting across a hard reset)
     was initially suspected but turned out to be a false lead: the
@@ -708,6 +722,14 @@ fw_printenv bootcmd altbootcmd altboot bootcount
     `bootcount=0` correctly disarmed by `rauc-mark-good`. The A/B
     swap-on-successful-boot behavior (§1) remains solid throughout, as
     it always has been.
+- **Autoboot partition-scan drift: PASS (fixed).** See §3.7 — a real
+  patch (`0008-reset-distro_bootpart-around-scan_dev_for_boot_part.patch`)
+  now clears `distro_bootpart` both before and after
+  `scan_dev_for_boot_part`'s loop. Confirmed on hardware through the
+  real build pipeline (not just a live env edit): deliberately
+  persisted a stale `distro_bootpart=99` and did a genuine hard reset —
+  reproduced the bug with only an end-of-loop clear in place, then
+  passed cleanly once the before-the-loop clear was added too.
 - **u-boot-env partition naming:** bug found and fixed before first SD
   card flash — see §3.3 — the SD card's `.wks.in` used `uboot-env`
   (no dash) where eMMC and every consumer expect `u-boot-env`.
