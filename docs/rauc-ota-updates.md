@@ -72,11 +72,32 @@ self-healing on a failed boot.
 The `-b` slot of each A/B partition starts **empty** at first flash/build;
 it's populated by the very first `rauc install`.
 
+**Minimum eMMC/SD card size**: the fixed-size A/B partitions alone (not
+counting `userfs`, which just fills whatever space is left) add up to
+about **6.6 GiB**: `metadata1`+`metadata2` (1 MiB) + `fip-a`+`fip-b`
+(8 MiB) + `u-boot-env` (0.5 MiB) + `bootfs-a`+`bootfs-b` (128 MiB) +
+`vendorfs-a`+`vendorfs-b` (500 MiB) + `rootfs-a`+`rootfs-b` (6 GiB, 3 GiB
+each) — confirmed via `lsblk` on real hardware for both
+`00395-02-00365` and `00395-01-00365`. That's the absolute floor before
+any `userfs` at all; budget **~8-10 GiB** in practice to leave real room
+for persistent application data. The SD card layout adds two more small
+fixed partitions up front (`fsbla1`/`fsbla2`, 256 KiB each, holding
+TF-A BL2 - eMMC doesn't need these, since it stores its FSBL in
+dedicated `mmcblk1boot0`/`boot1` hardware partitions instead), which is
+negligible against this total - the same minimum-size guidance applies
+to both media. Both DUTs this project has been tested on have ~29-31 GB
+of eMMC, so this has not been a real constraint so far, but it's the
+number to check against before ever considering smaller eMMC hardware
+for a board in this family.
+
 Defined in `meta-cargt-stm32mp-addons/wic/sdcard-stm32mp257f-cargt-00395-02-00365-optee-vendorfs-2GB.wks.in`
 (SD card `.wks.in`; ST's `flashlayout-stm32mp.bbclass` auto-generates the
 matching eMMC-production FlashLayout TSV from the same partition set, so
 both flashing paths — wic for SD card, `production_program_service.py` for
-eMMC — stay in sync automatically from this one file).
+eMMC — stay in sync automatically from this one file). `00395-01-00365`
+was brought up to the same layout afterward, in its own equivalently-named
+`.wks.in` files - same partition structure and sizes, same minimum-media-size
+guidance above.
 
 ### 2.2 Boot flow and bank selection
 
@@ -537,6 +558,56 @@ Verified on hardware: the marker's mtime is unchanged across a second
 fresh-slot install, confirming the guarded growfs call is actually
 skipped the second time, not just logged as if it were.
 
+**A second, more serious instance of this same bug class was found later**
+(via live serial console on `00395-01-00365`, after its first-ever OTA
+install into bank B repeatedly failed to boot — see below): `init-resize.sh`
+itself still had exactly the unprotected `userfs` case this section
+originally believed only affected the (harmless, sub-second)
+`resize-helper` path. Its own "already resized" guard
+(`$ROOTFS_DIR/etc/.resized`) lives inside whichever rootfs is currently
+booting, gating the *entire* loop — so while `root`/`vendor`/`boot` are
+correctly no-ops now (§ above), `userfs`'s full
+`e2fsck -f -y -c -C 0` bad-blocks scan (plus a second `e2fsck` pass and
+`resize2fs`, from `0001`/`0003`) still ran unconditionally on every fresh
+bank's first boot, because a freshly OTA-installed rootfs has never had
+the chance to create that marker. Unlike `resize-helper`'s cheap
+`systemd-growfs` path, this one *is* the expensive, unconditional
+bad-blocks scan, running in the initramfs before systemd or the kernel's
+own watchdog userspace handling is active.
+
+Confirmed on hardware: against `00395-01-00365`'s ~22GB `userfs`, the scan
+was still at ~8% after 24 seconds (full run: several minutes) — long
+enough that OP-TEE's own watchdog (`stm32_iwdg`) panicked and reset the
+SoC mid-scan, every time, before Linux userspace or `systemd-journald`
+ever started. This looked identical to an unexplained early-boot hang
+from the OS side (no journal entry, no pstore record — `journalctl
+--list-boots` showed only the *final* boot, with none of the three failed
+attempts in between), and was only root-caused by moving a live serial
+cable onto the affected board and watching a boot attempt directly.
+U-Boot's rollback-safety mechanism (§2.5) correctly treated this as
+"bank B keeps failing to boot" and fell back to bank A after `bootlimit`
+(3) attempts — itself a good sign that rollback safety generalizes
+correctly, but masking a real, separate defect in the resize path.
+
+**Fixed** (`0004-skip-userfs-resize-if-already-done.patch`): give
+`init-resize.sh`'s `userfs` case the exact same persistent-marker
+protection `resize-helper`'s own `0003` patch already established —
+mount the `userfs` device long enough to check for
+`.resize-helper-done` at its root (the same file, since `/usr/local` is
+exactly where `userfs` is later mounted), skip the scan entirely if
+present, and write the marker there after resizing if this script is the
+one that ends up doing it (so a board's very first boot doesn't depend
+on `resize-helper.service` running afterward to set it). Confirmed on
+hardware, both boards: after rebuilding and re-installing, `00395-01-00365`
+booted bank B successfully on the first attempt (serial log shows a
+single `SKIP USERFS [...] (already resized)` line in place of the scan),
+and the A→B→A round trip now completes cleanly both directions.
+`00395-02-00365` was rebuilt and re-tested with the same fix as a
+precaution — it had not been observed to hit this failure (a faster eMMC
+and/or smaller `userfs` may have kept it under the watchdog timeout by
+chance), but the underlying bug was equally present there before this
+fix, and the fix doesn't change behavior on the already-working board.
+
 ### 3.7 Fixed: autoboot partition scan drifted to the wrong partition
 
 **Found during rollback-safety testing and fixed by
@@ -688,6 +759,27 @@ fw_printenv bootcmd altbootcmd altboot bootcount
   marker written to `userfs` on first grow is correctly left untouched
   (same mtime) across a subsequent fresh-slot OTA install, confirming the
   guarded resize call is actually skipped the second time.
+- **`init-resize.sh` userfs bad-blocks scan re-running on every fresh
+  bank: found and fixed.** See §3.6. Root-caused via live serial console
+  on `00395-01-00365`: a full multi-minute `e2fsck -c` bad-blocks scan of
+  `userfs` re-ran on every OTA update's first boot into a freshly-installed
+  bank (the script's own marker lives inside the rootfs being booted, not
+  on `userfs`), long enough to trip OP-TEE's watchdog and reset the SoC —
+  three times, before U-Boot's rollback logic correctly fell back to the
+  previous good bank. Fixed with the same persistent-userfs-marker pattern
+  already used by `resize-helper` (`0004-skip-userfs-resize-if-already-done.patch`).
+  Confirmed on hardware: `00395-01-00365` now completes an A→B→A round
+  trip cleanly, first attempt each direction; `00395-02-00365` rebuilt and
+  re-tested with the same fix as a precaution, no regression.
+- **`00395-01-00365` brought up to full A/B RAUC parity with
+  `00395-02-00365`:** PASS. Same partition layout (`.wks.in` for both SD
+  card variants), machine conf (`rauc.slot`, `UBOOT_EXTLINUX_ROOT` for
+  both eMMC and SD card), per-machine `system.conf`, dedicated bundle
+  recipe, and the same `/run/cargt-part/`-scoped `fw_env.config` fix
+  `00395-02-00365` already had. Confirmed via live reflash and testing:
+  initial bring-up flawless, A→B→A round trip PASS after the userfs-resize
+  fix above (the only real defect found was the one described there, not
+  specific to this board's partition layout itself).
 - **Rollback-on-failed-boot:** **PASS — confirmed working end-to-end on
   real hardware.** See §2.5 for the full history (several distinct root
   causes found along the way). Summary:
