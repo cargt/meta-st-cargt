@@ -5,14 +5,13 @@
 > `stm32mp25-cargt-00395-02-00365`. It's being written up for
 > dev.cargt.com; a companion doc for the i.MX/SWUpdate side is planned once
 > that work happens. RAUC A/B updates are now verified working
-> end-to-end on **both** eMMC and SD card. The rollback-safety gap
-> (§2.5) previously documented here now has an implementation
-> (env-based `bootcount`/`bootlimit` rollback); **the per-attempt
-> watchdog-recovery half of this is now confirmed working on real
-> hardware, but the "fall back after N attempts" half is not yet
-> confirmed end-to-end** (a separate bug prevents `bootcount` from
-> persisting across the watchdog-triggered reset) — see §2.5 and
-> "Testing status" before describing this as fully fixed.
+> end-to-end on **both** eMMC and SD card, **and the rollback-safety gap
+> (§2.5) is now closed and confirmed working end-to-end on real
+> hardware**: env-based `bootcount`/`bootlimit` rollback, a kernel
+> watchdog-behavior fix, and a bank that fails to boot `bootlimit`
+> times in a row now automatically falls back to the previous good
+> bank with no manual intervention. See §2.5 and "Testing status" for
+> the full verification history.
 
 ## 1. Overview
 
@@ -27,18 +26,20 @@ device switch over — which is real, verified protection against a
 partial/interrupted *write* (a copy that only ever half-installs can't
 end up selected as primary).
 
-**Important caveat (§2.5): automatic fallback if the new copy fails to
-*boot* is partially confirmed.** The A/B swap itself is solid — install,
-reboot, and slot-selection have all been exercised heavily and work
-reliably. Rollback safety (env-based `bootcount`/`bootlimit`, §2.5) has
-been implemented and deployed; a real sabotage test (genuine `root=`
-corruption on the actually-read extlinux config) now reliably triggers a
-watchdog panic and clean reset within ~20-30s, confirmed 6 times in a
-row — but a separate bug prevents `bootcount` itself from persisting
-across that reset, so the "give up and switch banks after N attempts"
-behavior has not yet been observed working end-to-end. Do not describe
-this system as fully self-healing on a
-failed boot; that gap remains open despite the implementation attempt.
+**§2.5 update: automatic fallback if the new copy fails to *boot* is now
+confirmed working end-to-end.** The A/B swap itself has always been
+solid — install, reboot, and slot-selection have been exercised heavily
+and work reliably. Rollback safety (env-based `bootcount`/`bootlimit`,
+§2.5) required two independent fixes (a kernel watchdog-behavior config
+and the U-Boot bootcount patch itself) before a full test with both
+genuinely present together was possible; that test has now been run and
+passed cleanly: a bank deliberately sabotaged to fail at boot got
+exactly `bootlimit` (3) real attempts, each one correctly recovering via
+a watchdog reset rather than hanging forever, then automatically fell
+back to the previous good bank on the 4th attempt with zero manual
+intervention — verified via a fully passive serial capture and
+confirmed post-boot state over SSH. This system can now be described as
+self-healing on a failed boot.
 
 ## 2. Theory of Operation
 
@@ -110,7 +111,7 @@ eMMC — stay in sync automatically from this one file).
    the only thing tracking accept/trial state — nothing in the boot chain
    actually acts on it if a boot fails. See §2.5.**
 
-### 2.5 Rollback safety: env-based bootcount (implemented; per-attempt recovery confirmed, fallback-after-N-attempts still open)
+### 2.5 Rollback safety: env-based bootcount (implemented and confirmed working end-to-end)
 
 **Original gap** (kept here for context): `set-primary` used to
 unconditionally, persistently rewrite `bootcmd` the moment `rauc install`
@@ -260,27 +261,31 @@ alone restores correct automatic scanning indefinitely afterward. A
 proper patch would have `scan_dev_for_boot_part` clear
 `distro_bootpart` itself the same way it already clears `devplist`.
 
-**Root cause #4 (open, blocking full end-to-end confirmation): the
-automatic per-boot `bootcount` increment does not persist across a hard
-(watchdog-triggered) reset.** `drivers/bootcount/bootcount_env.c`'s
-`bootcount_store()` does call `env_save()` unconditionally whenever
-`upgrade_available=1` (confirmed true throughout testing) — so per
-source, each boot's increment *should* survive a reset. Empirically, it
-does not: `bootcount` was directly observed staying at a fixed manually-set
-value (`2`) across two further automatic hang → watchdog-panic → reset
-cycles that should have advanced it to 3 and then 4. A control test
-proved the underlying persist mechanism itself works fine — manually
-`setenv bootcount 2; saveenv` correctly round-tripped through a hard
-reset — so this is specifically about the *automatic* in-boot increment
-path not reaching flash, not a general environment-write problem. Likely
-related to this board's redundant-environment (two-copy) scheme somehow
-not picking up the automatic write, but not yet root-caused. **Practical
-effect**: `bootcount` never actually exceeds `bootlimit`, so the
-automatic fallback to the other bank after N failed attempts has not yet
-been observed working end-to-end, even though the underlying
-per-attempt watchdog-reset recovery (root cause #2's fix) is now solidly
-confirmed. This is the one remaining piece before rollback-safety can be
-called fully working.
+**A "root cause #4" was initially suspected here and turned out to be a
+false lead worth recording as a cautionary tale, not a real bug**: an
+extended test run showed `bootcount` staying fixed at a manually-set
+value across multiple automatic hang → watchdog-panic → reset cycles,
+strongly suggesting `bootcount_store()`'s `env_save()` call wasn't
+persisting across a hard reset. The actual explanation was much more
+mundane: that entire test run (and the kernel watchdog-fix verification
+before it) was executed against a U-Boot binary built while patch 0007
+was *temporarily removed* from `SRC_URI` for the A/B isolation test in
+§2.5's history, and it was never rebuilt with 0007 restored before
+moving on — so `CONFIG_BOOTCOUNT_LIMIT` was never actually compiled
+into the binary running on the board at all. `bootcount_inc()`/
+`bootcount_error()` were the stub no-op versions
+(`include/bootcount.h`'s `#else` branch) the whole time, which fully
+explains every symptom: `bootcmd` always ran (the stub
+`bootcount_error()` always returns 0), and `env_save()` was never
+reached (not a silent failure — the function that calls it,
+`bootcount_store()`, was never linked in). Confirmed by checking the
+deployed FIP binary directly with `strings` for the
+`"Bootlimit (%lu) exceeded"` marker compiled into the real
+`bootcount_error()` — it was absent. After rebuilding with 0007
+genuinely present (confirmed via the same `strings` check) and
+redeploying just the FIP (no full image rebuild needed — only the
+U-Boot/TF-A/OP-TEE binary changes for this), the full mechanism worked
+correctly on the very first try — see "Testing status".
 
 ### 2.3 Update flow (what `rauc install` actually does)
 
@@ -670,10 +675,9 @@ fw_printenv bootcmd altbootcmd altboot bootcount
   marker written to `userfs` on first grow is correctly left untouched
   (same mtime) across a subsequent fresh-slot OTA install, confirming the
   guarded resize call is actually skipped the second time.
-- **Rollback-on-failed-boot:** **PARTIAL PASS — per-attempt watchdog
-  recovery confirmed working; automatic fallback after N attempts not
-  yet confirmed end-to-end.** See §2.5 for the full history (four
-  distinct root causes found and mostly fixed). Summary:
+- **Rollback-on-failed-boot:** **PASS — confirmed working end-to-end on
+  real hardware.** See §2.5 for the full history (several distinct root
+  causes found along the way). Summary:
   - Patch 0007 / the bootcount U-Boot mechanism was **ruled out** as the
     cause of the original hang-forever regression (A/B test against an
     unmodified U-Boot reproduced the identical hang).
@@ -681,24 +685,29 @@ fw_printenv bootcmd altbootcmd altboot bootcount
     the kernel silently auto-feed the watchdog through any pre-systemd
     hang. **Fixed and confirmed on real hardware**: the identical
     corrupted-`root=` sabotage now reliably triggers a watchdog panic
-    and clean reset ~20-30s into the hang — reproduced 6 times in a row
-    without a miss.
+    and clean reset ~20-30s into the hang.
   - A separate, unrelated U-Boot autoboot partition-scan bug
     (`distro_bootpart` never resets, drifting to the wrong partition
     across boots) was found and fixed (`setenv distro_bootpart;
     saveenv`) — this was blocking automatic retries, not a
     rollback-safety defect itself.
-  - **Still open**: the automatic per-boot `bootcount` increment does
-    not persist across a *hard* (watchdog-triggered) reset, even though
-    `bootcount_store()` calls `env_save()` unconditionally when
-    `upgrade_available=1`. A manual `setenv bootcount N; saveenv` proves
-    the underlying persist mechanism works fine — this is specifically
-    about the automatic in-boot increment not reaching flash. Until this
-    is fixed, `bootcount` never exceeds `bootlimit`, so the "fall back to
-    the other bank after N attempts" half of rollback-safety has not yet
-    been observed working, even though the underlying per-attempt
-    recovery now demonstrably works. The A/B swap-on-successful-boot
-    behavior (§1) is unaffected and remains solid throughout.
+  - A "root cause #4" (bootcount not persisting across a hard reset)
+    was initially suspected but turned out to be a false lead: the
+    binary under test that whole time had been built with patch 0007
+    temporarily removed for an earlier isolation test and never
+    rebuilt with it restored, so the bootcount mechanism was simply
+    never compiled in. See §2.5 for the full account.
+  - **With both fixes genuinely present together for the first time**
+    (verified via `strings` on the deployed FIP), a full, fully passive
+    (zero manual interaction) test passed cleanly: bank B, deliberately
+    sabotaged to fail at boot, got exactly `bootlimit` (3) real
+    attempts — each one hanging and then correctly recovering via a
+    watchdog reset — and automatically fell back to bank A on the 4th
+    attempt. Confirmed via SSH afterward: correct bank, `bootcmd`/
+    `altbootcmd` correctly resynced, `upgrade_available=0` and
+    `bootcount=0` correctly disarmed by `rauc-mark-good`. The A/B
+    swap-on-successful-boot behavior (§1) remains solid throughout, as
+    it always has been.
 - **u-boot-env partition naming:** bug found and fixed before first SD
   card flash — see §3.3 — the SD card's `.wks.in` used `uboot-env`
   (no dash) where eMMC and every consumer expect `u-boot-env`.
