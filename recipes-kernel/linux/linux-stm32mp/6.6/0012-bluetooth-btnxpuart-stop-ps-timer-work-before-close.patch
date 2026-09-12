@@ -1,0 +1,128 @@
+From: Cargt <tim.carney@cargt.com>
+Subject: [PATCH] Bluetooth: btnxpuart: stop ps timer/work before closing
+ the port
+
+0010-serial-stm32-fix-break_ctl-pm_runtime-race.patch made
+stm32_usart_break_ctl() use the blocking pm_runtime_resume_and_get(),
+on the theory that btnxpuart's power-save workqueue calling
+serdev_device_break_ctl() asynchronously was racing an in-progress
+pm_runtime resume. That fix is a real, harmless correctness
+improvement in isolation, but it does not actually prevent the crash:
+this port's pm_runtime callbacks (stm32_usart_runtime_suspend/resume)
+never touch the peripheral clock at all - only the physically
+separate stm32_usart_pm()/.pm uart_op path does that, invoked from
+uart_close() on every ordinary tty close, completely independently of
+pm_runtime. So pm_runtime_resume_and_get() succeeding in break_ctl()
+gives no guarantee the clock is actually on.
+
+The external abort has now been reproduced twice on real hardware,
+independently, during ordinary operation with no Bluetooth-specific
+test in progress - both times wedging the whole system permanently
+(not just Bluetooth), because the abort happens inside
+stm32_usart_break_ctl()'s spin_lock_irqsave(&port->lock, ...) critical
+section: the faulting task is killed without ever reaching
+spin_unlock_irqrestore(), so port->lock is left held forever, and
+every later user of that same lock - most importantly the port's own
+IRQ handler - blocks on it permanently. Kworkers pile up in
+uninterruptible sleep until the system can no longer fork new
+processes.
+
+The actual race is in btnxpuart_close(), not in the UART driver:
+
+  btnxpuart_close()                       ps_timeout_func()/ps_work_func()
+  ------------------                      ------------------------------
+  serdev_device_close(serdev)
+    -> ttyport_close()
+       clear_bit(SERPORT_ACTIVE, ...)
+       tty->ops->close()
+         -> uart_close()
+            -> stm32_usart_shutdown()
+               -> uart_change_pm(OFF)
+                  -> stm32_usart_pm()
+                     clk_disable_unprepare()
+                     [ port clock now off ]
+                                            [ timer/work still armed,
+                                              BTNXPUART_SERDEV_OPEN still
+                                              set - only cleared below ]
+                                            ps_control()
+                                              serdev_device_break_ctl()
+                                                -> ttyport_break_ctl()
+                                                   [ no SERPORT_ACTIVE
+                                                     check at all ]
+                                                -> uart_break_ctl()
+                                                   [ only checks
+                                                     port->type, never
+                                                     reset by close ]
+                                                -> stm32_usart_break_ctl()
+                                                   [ writes a register on
+                                                     an unclocked
+                                                     peripheral: abort ]
+  clear_bit(BTNXPUART_SERDEV_OPEN, ...)
+
+ps_timeout_func()/ps_work_func() run off their own independent
+kernel timer and workqueue item, entirely decoupled from the hci_dev
+open/close lifecycle - the only thing standing between them and the
+already-closing port is the BTNXPUART_SERDEV_OPEN bit, which
+btnxpuart_close() does not clear until after serdev_device_close() has
+already returned. nxp_serdev_remove() already gets this right (via
+ps_cleanup(), which stops the timer and cancels the work before doing
+anything else), but that same synchronization is missing from the far
+more commonly exercised close() path - every ordinary hci_dev_close()
+(rfkill, bluetoothd restart, "hciconfig hciN down", suspend/resume),
+not just module unbind.
+
+ps_cleanup() itself can't be reused directly here: besides stopping
+the timer/work, it also calls mutex_destroy(&psdata->ps_lock) and
+uses timer_shutdown_sync(), both of which permanently retire that
+timer/mutex for the rest of the device's lifetime - correct for
+remove(), wrong for close(), since ps_setup() (timer_setup()/
+mutex_init()) only ever runs once at probe, not again on every
+open(). Use timer_delete_sync()/cancel_work_sync() instead - these
+stop the timer/work and wait for any in-flight callback to finish,
+without retiring either for a subsequent open().
+
+Mainline drivers/bluetooth/btnxpuart.c has the same gap as of this
+writing - this is a generic driver bug, not ST/Cargt-specific -
+carried here until (if) it lands upstream.
+
+Signed-off-by: Cargt <tim.carney@cargt.com>
+---
+diff --git a/drivers/bluetooth/btnxpuart.c b/drivers/bluetooth/btnxpuart.c
+index 1111111111..2222222222 100644
+--- a/drivers/bluetooth/btnxpuart.c
++++ b/drivers/bluetooth/btnxpuart.c
+@@ -1323,6 +1323,34 @@ static int btnxpuart_open(struct hci_dev *hdev)
+ static int btnxpuart_close(struct hci_dev *hdev)
+ {
+ 	struct btnxpuart_dev *nxpdev = hci_get_drvdata(hdev);
++	struct ps_data *psdata = &nxpdev->psdata;
++
++	/*
++	 * Stop the power-save timer/work before tearing down the serdev
++	 * port below. Without this, ps_timeout_func()/ps_work_func() can
++	 * still fire concurrently with (or immediately after)
++	 * serdev_device_close(), and ps_control() will still see
++	 * BTNXPUART_SERDEV_OPEN set (it's only cleared further down) and
++	 * go on to call serdev_device_break_ctl() on a port whose
++	 * underlying UART has already been - or is concurrently being -
++	 * shut down and clock-gated. That break_ctl() call reaches the
++	 * UART driver's register write while its peripheral clock is off,
++	 * causing a synchronous external abort inside a spinlock-protected
++	 * critical section; the faulting task is killed without running
++	 * the pending unlock, wedging every future user of that same lock
++	 * (including the port's own IRQ handler) - and eventually the
++	 * whole system, once enough kworkers pile up stuck on it.
++	 *
++	 * Use timer_delete_sync()/cancel_work_sync(), not
++	 * ps_cancel_timer()/ps_cleanup() (used by remove()): those call
++	 * timer_shutdown_sync() and mutex_destroy(), which permanently
++	 * retire ps_timer/ps_lock for the rest of this device's lifetime.
++	 * ps_setup() (timer_setup()/mutex_init()) only ever runs once, at
++	 * probe - not on every open() - so close() must leave both usable
++	 * for a subsequent open() rather than permanently disable them.
++	 */
++	timer_delete_sync(&psdata->ps_timer);
++	cancel_work_sync(&psdata->work);
+
+ 	serdev_device_close(nxpdev->serdev);
+ 	skb_queue_purge(&nxpdev->txq);

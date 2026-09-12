@@ -46,6 +46,16 @@ SRC_URI += "${@bb.utils.contains('MACHINE_FEATURES', '00395', 'file://${LINUX_VE
 # STM32MP2 board with a UART-attached device that issues an out-of-band
 # break control (observed via btnxpuart's power-save workqueue on 00395),
 # so apply it unconditionally rather than gating it.
+#
+# On its own this does NOT prevent the external abort it was written
+# against - this port's pm_runtime callbacks never touch the actual
+# peripheral clock (a separate .pm/uart_close() path does that), so
+# pm_runtime_resume_and_get() here can succeed while the clock is still
+# off. See 0012 for the real fix (in btnxpuart itself), found after the
+# abort recurred - twice, on two different boards - with this patch
+# already applied. Kept anyway: it's a real, harmless correctness
+# improvement for a related (if largely dormant) async-resume-vs-
+# system-suspend edge case.
 SRC_URI += "file://${LINUX_VERSION}/0010-serial-stm32-fix-break_ctl-pm_runtime-race.patch"
 
 # tcpci ALERT_MASK is missing several legitimate alert types (FAULT,
@@ -54,6 +64,16 @@ SRC_URI += "file://${LINUX_VERSION}/0010-serial-stm32-fix-break_ctl-pm_runtime-r
 # triggers one repeatedly. Generic driver correctness fix, not tied to
 # any one board - see the patch for the observed failure.
 SRC_URI += "file://${LINUX_VERSION}/0011-usb-typec-tcpci-unmask-fault-vbus-discnct-alerts.patch"
+
+# btnxpuart_close() doesn't stop its own power-save timer/workqueue
+# before tearing down the serdev port, letting a concurrent
+# ps_work_func() call serdev_device_break_ctl() on a port that's
+# already had its UART clock gated by close - the actual root cause of
+# the stm32-usart external abort 0010 (above) was written against but
+# doesn't prevent. Generic driver bug (mainline has the same gap as of
+# this writing), not tied to any one board - see the patch for the full
+# race and why it wedges the whole system, not just Bluetooth.
+SRC_URI += "file://${LINUX_VERSION}/0012-bluetooth-btnxpuart-stop-ps-timer-work-before-close.patch"
 
 SRC_URI:class-devupstream += " file://${LINUX_VERSION}/cargt_00395_kernel_config_mods.config;subdir=fragments/features \
                                file://${LINUX_VERSION}/cargt_00378_kernel_config_mods.config;subdir=fragments/features \
