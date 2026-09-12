@@ -11,11 +11,20 @@ KERNEL_CONFIG_FRAGMENTS:append:stm32mp2common = " ${@bb.utils.contains('MACHINE_
 # since it's set distro-wide for cargt-openstlinux-weston, not per-board.
 KERNEL_CONFIG_FRAGMENTS:append = " ${@bb.utils.contains('DISTRO_FEATURES', 'rauc', '${WORKDIR}/fragments/features/${LINUX_VERSION}/cargt_rauc_kernel_config_mods.config', '', d)} "
 
+# Hung-task/workqueue-stall detection: not tied to any one board's
+# MACHINE_FEATURES or to RAUC - any board with a hardware watchdog armed
+# benefits equally, since this closes a real gap where a localized
+# in-kernel deadlock (one lock held forever, everything downstream of it
+# wedged) is invisible to a watchdog that's still being fed by an
+# unaffected systemd main loop. Apply unconditionally.
+KERNEL_CONFIG_FRAGMENTS:append = " ${WORKDIR}/fragments/features/${LINUX_VERSION}/cargt_watchdog_hardening_kernel_config_mods.config "
+
 SRC_URI += "file://${LINUX_VERSION}/cargt_00378_kernel_config_mods.config;subdir=fragments/features \
             file://${LINUX_VERSION}/cargt_00365_kernel_config_mods.config;subdir=fragments/features \
             file://${LINUX_VERSION}/cargt_00395_kernel_config_mods.config;subdir=fragments/features \
             file://${LINUX_VERSION}/cargt_00393_kernel_config_mods.config;subdir=fragments/features \
             file://${LINUX_VERSION}/cargt_rauc_kernel_config_mods.config;subdir=fragments/features \
+            file://${LINUX_VERSION}/cargt_watchdog_hardening_kernel_config_mods.config;subdir=fragments/features \
             "
 
 # 00378 SOM: CC33xx wifi/bt driver
