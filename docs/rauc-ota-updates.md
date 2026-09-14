@@ -1,17 +1,21 @@
-# RAUC A/B OTA Updates — STM32MP2 (00395-02-00365)
+# RAUC A/B OTA Updates — STM32MP2 (00395-01-00365 / 00395-02-00365)
 
 > **Status: draft.** This describes the RAUC-based remote update mechanism
-> added to `meta-st-cargt` / `meta-cargt-stm32mp-addons` for machine
-> `stm32mp25-cargt-00395-02-00365`. It's being written up for
+> added to `meta-st-cargt` / `meta-cargt-stm32mp-addons`, brought up on
+> `stm32mp25-cargt-00395-02-00365` first and then given full parity on
+> `stm32mp25-cargt-00395-01-00365` (§2.1). It's being written up for
 > dev.cargt.com; a companion doc for the i.MX/SWUpdate side is planned once
 > that work happens. RAUC A/B updates are now verified working
-> end-to-end on **both** eMMC and SD card, **and the rollback-safety gap
-> (§2.5) is now closed and confirmed working end-to-end on real
-> hardware**: env-based `bootcount`/`bootlimit` rollback, a kernel
-> watchdog-behavior fix, and a bank that fails to boot `bootlimit`
-> times in a row now automatically falls back to the previous good
-> bank with no manual intervention. See §2.5 and "Testing status" for
-> the full verification history.
+> end-to-end on **both boards** and **both** eMMC and SD card, **and the
+> rollback-safety gap (§2.5) is now closed and confirmed working
+> end-to-end on real hardware**: env-based `bootcount`/`bootlimit`
+> rollback, a kernel watchdog-behavior fix, and a bank that fails to boot
+> `bootlimit` times in a row now automatically falls back to the previous
+> good bank with no manual intervention. Two independent, non-RAUC-specific
+> reliability bugs were also found and fixed along the way: a `userfs`
+> resize bug specific to the SD card build (§3.6) and a Bluetooth driver
+> race that could wedge the whole system (§3.8). See §2.5, §3.6, §3.8, and
+> "Testing status" for the full verification history.
 
 ## 1. Overview
 
@@ -477,25 +481,31 @@ RAUC A/B OTA update cycle confirmed working on the SD card.
 | `recipes-bsp/u-boot/u-boot-stm32mp/0007-enable-bootcount-env-for-ab-rollback-safety.patch` | Disables the (confirmed-inert) `CONFIG_FWU_MULTI_BANK_UPDATE`, enables `CONFIG_BOOTCOUNT_LIMIT`/`CONFIG_BOOTCOUNT_ENV` — the actual rollback-safety mechanism (§2.5) |
 | `recipes-bsp/u-boot/u-boot-stm32mp/0008-reset-distro_bootpart-around-scan_dev_for_boot_part.patch` | Fixes the autoboot partition-scan drift bug (§3.7) — clears `distro_bootpart` before and after `scan_dev_for_boot_part`'s loop |
 | `recipes-bsp/trusted-firmware-a/tf-a-stm32mp/0002-add-logs-for-demo-purpose.patch` | NOTICE-level bank-selection logging, for visibility during bring-up |
-| `recipes-kernel/linux/linux-stm32mp/6.6/cargt_rauc_kernel_config_mods.config` | `CONFIG_BLK_DEV_LOOP`, `CONFIG_SQUASHFS`, `CONFIG_MD`, `CONFIG_BLK_DEV_DM`, `CONFIG_BLK_DEV_NBD`, `CONFIG_DM_VERITY`, `CONFIG_CRYPTO_SHA256` — required for RAUC's dm-verity bundle format |
+| `recipes-kernel/linux/linux-stm32mp/6.6/cargt_rauc_kernel_config_mods.config` | `CONFIG_BLK_DEV_LOOP`, `CONFIG_SQUASHFS`, `CONFIG_MD`, `CONFIG_BLK_DEV_DM`, `CONFIG_BLK_DEV_NBD`, `CONFIG_DM_VERITY`, `CONFIG_CRYPTO_SHA256` — required for RAUC's dm-verity bundle format; also `# CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED is not set` (§2.5's root cause #2) |
+| `recipes-kernel/linux/linux-stm32mp/6.6/cargt_watchdog_hardening_kernel_config_mods.config` | `CONFIG_DETECT_HUNG_TASK` + `CONFIG_BOOTPARAM_HUNG_TASK_PANIC` + `CONFIG_WQ_WATCHDOG` (§3.8) — applied unconditionally, not RAUC-gated, since it benefits any board with a hardware watchdog armed |
+| `recipes-kernel/linux/linux-stm32mp/6.6/0010-serial-stm32-fix-break_ctl-pm_runtime-race.patch`, `0012-bluetooth-btnxpuart-stop-ps-timer-work-before-close.patch` | The Bluetooth power-save race fix (`0012`) and its predecessor (`0010`, kept but not sufficient alone — see §3.8) |
 | `recipes-core/rauc/rauc_%.bbappend` + `files/0001-support-bin-extension.patch` | Patches RAUC's `update_handler.c` so it accepts `*.bin` images as `raw` slot type (needed for the fip binary) |
-| `recipes-core/rauc/rauc-conf.bbappend` + `files/system.conf`, `post-install.sh`, `st-boot-script.sh`, `ca.cert.pem` | The actual RAUC config + custom bootloader backend + post-install patching logic (see §2.3/2.4) |
+| `recipes-core/rauc/rauc-conf.bbappend` + `files/<machine>/system.conf`, `files/post-install.sh`, `files/st-boot-script.sh`, `files/ca.cert.pem` | The actual RAUC config + custom bootloader backend + post-install patching logic (see §2.3/2.4) — `system.conf` is per-machine (only its `compatible=` line differs), one subdirectory per board |
 | `recipes-core/fwu-gen-metadata/fwu-gen-metadata-v2.bb` + `files/update_metadata.sh` | Writes TF-A FWU metadata (v2 format) via `mkfwumdata`; fixed platform-wide UUIDs, not per-board |
-| `recipes-core/bundles/update-st-bundle-stm32mp25-cargt-00395-02-00365.bb` | The bundle recipe (slots, compatible string, signing key/cert) |
+| `recipes-core/bundles/update-st-bundle-stm32mp25-cargt-00395-02-00365.bb`, `update-st-bundle-stm32mp25-cargt-00395-01-00365.bb` | The bundle recipes, one per board (slots, compatible string, signing key/cert) |
 | `recipes-core/systemd/cargt-device-symlinks_1.0.bb` | The `/run/cargt-part/` symlink service (§2.4) |
 | `recipes-core/systemd/systemd-mount-partitions.bbappend` | Adds `-a` suffix to bootfs/vendorfs/rootfs in `MOUNT_PARTITIONS_LIST` (not userfs) |
 | `recipes-core/udev/udev-extraconf_%.bbappend` + `files/cargt-ab-partitions.ignorelist` | Excludes A/B partitions (mmc[01]p1–p11) from udev's generic auto-mounter — without this, the automounter races RAUC for exclusive access to the inactive slot ("Device or resource busy") |
 | `recipes-st/initrd/initrd-boot/0002-skip-first-boot-resize-for-fixed-size-ab-partitions.patch` | Skips `init-resize.sh`'s fsck/resize for `root*`/`vendor*`/`boot*` — those partitions are fixed-size, only `user*` needs it |
-| `recipes-bsp/tools/resize-helper/0002-skip-fixed-size-ab-partitions.patch`, `0003-skip-userfs-resize-if-already-done.patch` | Same idea for the other first-boot resize script; `0003` additionally records a marker **on userfs itself** (not in `/etc`, which every OTA update reflashes) so the slow `e2fsck -c` bad-blocks pass only ever runs once, not on every fresh-slot first boot |
+| `recipes-st/initrd/initrd-boot/0004-skip-userfs-resize-if-already-done.patch`, `0005-dont-mark-userfs-resized-from-the-initrd.patch` | `0004` gives `init-resize.sh`'s `userfs` case the same persistent-marker check as `resize-helper` (§3.6); `0005` stops it from also *writing* that marker, since it always runs first and was winning the race to mark the job done before `resize-helper.service`'s real SD card fix ever got a chance (§3.6) |
+| `recipes-bsp/tools/resize-helper/0002-skip-fixed-size-ab-partitions.patch`, `0003-skip-userfs-resize-if-already-done.patch`, `0004-extend-userfs-gpt-partition-before-growing-it.patch` | Same idea for the other first-boot resize script; `0003` records a marker **on userfs itself** (not in `/etc`, which every OTA update reflashes) so the slow `e2fsck -c` bad-blocks pass only ever runs once; `0004` extends `userfs`'s GPT partition before growing it — the actual mechanical fix for the SD card `userfs`-stuck-at-200M bug (§3.6) |
 | `recipes-cargt/images/cargt-image-dev.bb` / `cargt-image-weston.bb` | Installs `rauc rauc-conf fwu-gen-metadata-v2 u-boot-tools-stm32mp cargt-device-symlinks` when `rauc` is in `DISTRO_FEATURES` |
 
 ### 3.3 Key config (`meta-cargt-stm32mp-addons`)
 
-- `conf/machine/stm32mp25-cargt-00395-02-00365.conf`:
+- `conf/machine/stm32mp25-cargt-00395-02-00365.conf`,
+  `stm32mp25-cargt-00395-01-00365.conf` (same pattern, one per board):
   `UBOOT_EXTLINUX_KERNEL_ARGS:append = " rauc.slot=A"` (build-time default);
   `UBOOT_EXTLINUX_ROOT:target-emmc/:target-sdcard` (literal device paths,
-  §2.4).
-- `wic/sdcard-...-vendorfs-2GB.wks.in`: the partition table (§2.1). Its
+  §2.4 — partition numbers confirmed via a live partition table dump on
+  each board, not assumed identical between them).
+- `wic/sdcard-...-vendorfs-2GB.wks.in` (one per board): the partition
+  table (§2.1). Its
   `u-boot-env` partition's `--part-name` must read `u-boot-env` (with the
   dash) to match both the actual eMMC layout and what
   `cargt-device-symlinks.sh`/`fw_env.config` look for — this drifted to
@@ -608,6 +618,65 @@ and/or smaller `userfs` may have kept it under the watchdog timeout by
 chance), but the underlying bug was equally present there before this
 fix, and the fix doesn't change behavior on the already-working board.
 
+**A third, unrelated `userfs` bug specific to the SD card build was found
+later, once the two fixes above let a fresh SD card boot far enough to
+actually observe it: `userfs` stayed stuck at its built 200M size
+forever, no matter how many times either resize script ran or how
+successfully either reported.** Root cause: on the SD card build,
+`userfs` is created as a small, fixed-size GPT partition (200M — see the
+`.wks.in`, §2.1), with the rest of the card deliberately left
+unpartitioned for `userfs` to grow into later. `resize2fs` and
+`systemd-growfs` both only ever grow a filesystem to fill its *existing*
+partition boundary — neither one ever touches the GPT partition table
+itself — so without an explicit partition-table extension first, neither
+had anything to grow into. eMMC never hits this: its flashlayout sizes
+`userfs` to consume the whole remaining capacity directly at flash time,
+so there's normally no free space left after it for this to matter.
+
+Fixed in two parts, both required together:
+
+1. **The actual mechanical fix, in `resize-helper.sh`**
+   (`0004-extend-userfs-gpt-partition-before-growing-it.patch`): before
+   calling `systemd-growfs`/`resize2fs`, extend the `userfs` GPT
+   partition table entry to consume the rest of the disk — delete and
+   recreate it with the same start sector, type GUID, unique GUID, and
+   name (only the end boundary moves, so nothing about how the partition
+   is identified changes), then tell the running kernel about the new
+   size via `resizepart` (falling back to `partprobe`). Guarded to only
+   ever act when `userfs` is genuinely the last partition on the disk
+   with real free space after it — a safe no-op on eMMC. Also handles a
+   real gotcha: an image `dd`'d onto a physically larger card than it was
+   built for leaves the GPT backup header (and the primary header's own
+   recorded "last usable sector") still reflecting the original, smaller
+   image size until `sgdisk -e` runs once — without that, the free space
+   after the last partition isn't visible to `sgdisk` at all and the
+   extend silently does nothing.
+2. **Why the fix above didn't take effect at first, in `init-resize.sh`**
+   (`0005-dont-mark-userfs-resized-from-the-initrd.patch`): this earlier,
+   initrd-stage script always runs *before* `resize-helper.service`, and
+   was unconditionally writing the shared `.resize-helper-done` marker
+   right after its own `resize2fs` attempt — regardless of whether that
+   attempt actually grew anything (it can't, on SD card, without fix #1
+   above). By the time `resize-helper.service` ran later and checked the
+   same marker, it saw "already done" and skipped its entire resize
+   block, including the new extend logic — permanently losing the race
+   on every single boot, since this script always runs first. Fixed by
+   no longer writing the marker from `init-resize.sh`; its own
+   fsck+resize2fs attempt is left in place unchanged (still useful on
+   eMMC), but only `resize-helper.service` — the only script that can
+   actually verify, and on SD card ensure, the marker is true — sets it
+   now.
+
+Root-caused via a debug line added to `resize-helper.service` printing
+marker state at its very first line (confirmed: already `1` on a
+completely fresh boot, before `resize-helper` had done anything at all)
+and by directly extracting the built `.wic` image's `userfs` partition
+region and reading it with `debugfs` (confirmed: the marker is not baked
+into the image itself — it really is written live, this early, only by
+`init-resize.sh`). **Verified on hardware, both DUTs**: a completely
+fresh SD card write now grows `userfs` from 200M to ~21GB automatically
+on first boot, no manual intervention.
+
 ### 3.7 Fixed: autoboot partition scan drifted to the wrong partition
 
 **Found during rollback-safety testing and fixed by
@@ -663,6 +732,89 @@ Workaround if an unpatched device gets stuck at the U-Boot prompt from
 this: a fully manual boot (`ext4load` the kernel/dtb/initrd from the
 correct bootfs partition directly, set `bootargs` by hand, then
 `booti`) reliably recovers the device without needing a reflash.
+
+### 3.8 Fixed: Bluetooth power-save race could wedge the whole system
+
+**Not a RAUC-specific bug — found during unrelated overnight eMMC A/B
+soak testing, but significant enough (and general enough) to record
+here alongside the other kernel/driver fixes this project produced.**
+Both DUTs independently hung during ~7 hours of otherwise unremarkable
+A/B cycling, with no Bluetooth-specific activity in progress on either.
+Symptoms: the board stayed fully reachable over the network — ping,
+TCP, even SSH authentication all worked — but no new process could ever
+be forked; an already-open serial console session kept working for a
+while before it, too, stopped responding.
+
+**Root cause, found via live serial console (a spare shell that hadn't
+yet tried to fork anything survived long enough to investigate)**: a
+synchronous external abort in `stm32_usart_break_ctl` (the STM32 UART
+driver), triggered by `btnxpuart` (the NXP Bluetooth driver)'s
+power-save workqueue calling `serdev_device_break_ctl()` on a port that
+was concurrently being (or had already been) closed — hitting an
+unclocked peripheral inside a spinlock-protected critical section. The
+faulting task is killed without ever reaching the matching unlock,
+which wedges every later user of that same lock (most importantly the
+port's own IRQ handler), and eventually the whole system once enough
+kworkers pile up stuck behind it. `btnxpuart_close()` tears down the
+port without first stopping its own independent power-save
+timer/workqueue, so a concurrent `ps_work_func()` can still fire on a
+port that's already (or about to be) unclocked by close — and since
+that timer/work item runs off the ordinary kernel timer/workqueue,
+completely decoupled from the HCI device's own open/close lifecycle,
+this can happen on **any** ordinary Bluetooth power-cycle (rfkill,
+`bluetoothd` restart, `hciconfig hciN down`, suspend/resume), not just
+module unbind — `nxp_serdev_remove()` already stops the timer/work
+correctly before tearing down the port, but that synchronization was
+missing from the far more commonly exercised `close()` path.
+
+An existing patch on this port, `0010-serial-stm32-fix-break_ctl-pm_runtime-race.patch`
+(already present before this bug was found), turned out **not** to
+prevent this: it makes `stm32_usart_break_ctl()` use the blocking
+`pm_runtime_resume_and_get()` instead of the non-blocking variant, on
+the theory that an async pm_runtime resume was racing the register
+write — but this port's `pm_runtime` callbacks never actually gate its
+peripheral clock at all; a completely separate `.pm`/`uart_close()` path
+does that. The fix is kept (it's a real, harmless correctness
+improvement for a different, largely dormant edge case) but was not
+what closed this bug.
+
+**Fixed** (`0012-bluetooth-btnxpuart-stop-ps-timer-work-before-close.patch`):
+make `btnxpuart_close()` stop the power-save timer and cancel its
+workqueue item — via `timer_delete_sync()`/`cancel_work_sync()`, not
+`nxp_serdev_remove()`'s own `ps_cancel_timer()`/`ps_cleanup()`, which
+permanently retire the timer/mutex for the rest of the device's
+lifetime and would silently break Bluetooth power-save forever after
+the first close/reopen if reused here — before tearing down the port.
+Mainline `drivers/bluetooth/btnxpuart.c` has the same gap as of this
+writing; this is a generic driver bug, not board-specific, carried here
+until (if) it lands upstream.
+
+**Also added, as defense-in-depth, not tied to this specific bug**:
+`CONFIG_DETECT_HUNG_TASK` + `CONFIG_BOOTPARAM_HUNG_TASK_PANIC`
+(timeout raised to 600s, from the 120s default, to avoid false-positiving
+on the legitimate one-time first-boot `userfs` bad-blocks scan discussed
+in §3.6). The reason the hardware watchdog never caught this hang on its
+own: once systemd opens `/dev/watchdog` and starts feeding it from its
+own main event loop, that loop has no dependency on whatever gets stuck
+elsewhere in the kernel, so it keeps petting the watchdog indefinitely
+while a completely unrelated subsystem silently deadlocks — the
+watchdog only verifies "is whoever holds this device still alive," not
+"is the whole system healthy." A confirmed stuck task now escalates
+into a real kernel panic after the timeout, which *does* stop systemd's
+watchdog-feed loop, letting the already-armed hardware watchdog fire and
+actually recover the board. No U-Boot changes are needed for this:
+`bootcount`/`bootlimit` (§2.5) are only ever tracked while
+`upgrade_available=1` (an active RAUC trial), so a watchdog reset during
+ordinary operation has no effect on A/B rollback bookkeeping.
+
+**Verified on hardware, both boards**: 30 (then 100) rapid `hciconfig
+hci0 down`/`up` cycles — deliberately targeting the exact
+close-vs-power-save-workqueue race — produced zero external aborts and
+zero stuck kworkers on either board, both remaining fully responsive
+throughout. Not yet verified under longer-duration/overnight soak
+conditions — the original failures took hours of incidental Bluetooth
+activity to manifest, so this stress test is strong evidence but not a
+full replacement for that.
 
 ## 4. Examples
 
@@ -886,14 +1038,47 @@ fw_printenv bootcmd altbootcmd altboot bootcount
   more bug in the same "eMMC/SD card numbers don't match" family along
   the way — `post-install.sh`'s hardcoded `rootfs_part_num_dico`
   (§2.6) — before it could produce a misleading result.
-- **Known gap remaining on the SD card path:** `userfs` has not yet had
-  its resize verified on a fresh SD card flash built with the e2fsck-twice
-  fix (§ implementation notes) — the SD card currently in use for testing
-  still has `userfs` stuck at its built 200M size from before that fix
-  landed, which was enough to block pushing a bundle to `/usr/local`
-  during this round (worked around by staging it in `/tmp` instead).
-  Re-verify on the next fresh SD card reflash.
+- **SD card `userfs` resize: found and fixed (two real bugs, both now
+  closed).** `userfs` was stuck at its built 200M size on every fresh SD
+  card flash, on both boards, despite the e2fsck-twice fix and multiple
+  earlier attempted fixes. Root-caused in two layers:
+  1. **The actual mechanical fix**: `userfs`'s GPT partition itself is a
+     fixed 200M entry on the SD card build (see the `.wks.in`), with the
+     rest of the card left genuinely unpartitioned — `resize2fs`/
+     `systemd-growfs` only ever grow a filesystem to fill its *existing*
+     partition boundary, never the partition table itself, so neither had
+     anything to grow into. Fixed in `resize-helper.sh`: extend the GPT
+     partition (same start sector/GUIDs/name, only the end boundary
+     moves, guarded to only ever act when `userfs` is genuinely the last
+     partition with real free space after it — a safe no-op on eMMC,
+     which is already sized to fill the disk at flash time) before
+     calling `systemd-growfs`/`resize2fs`.
+  2. **Why that fix didn't take effect at first**: `init-resize.sh` (the
+     *earlier* initrd-stage resize script, patched previously to
+     check/write a marker shared with `resize-helper.service`) always
+     runs first and was unconditionally writing that marker after its
+     own `resize2fs` attempt — regardless of whether that attempt
+     actually grew anything (it can't, on SD card, without fix #1). By
+     the time `resize-helper.service` ran later and checked the same
+     marker, it saw "already done" and skipped its entire resize block,
+     including the new extend logic — permanently losing the race on
+     every single boot. Root-caused by adding a debug line to
+     `resize-helper.service` printing marker state at its very first
+     line (confirmed: already `1` on a completely fresh boot, before
+     `resize-helper` had done anything) and by directly extracting the
+     built `.wic` image's `userfs` partition region and reading it with
+     `debugfs` (confirmed: the marker is not baked into the image
+     itself — it's written live, this early, only by `init-resize.sh`).
+     Fixed by no longer writing the marker from `init-resize.sh`; only
+     `resize-helper.service` (the only script that can actually verify,
+     and on SD card ensure, it's true) sets it now.
+
+  **Verified on hardware, both DUTs**: a completely fresh SD card write
+  now grows `userfs` from 200M to ~21GB automatically on first boot, no
+  manual intervention — `"Extending /dev/mmcblk0p14 ... to use 46392421
+  free sectors"` followed by the real incremental ext4 resize
+  progression, both now visible in the boot log where before this fix
+  neither ever ran.
 
 This section reflects the state as of the most recent test session; keep
-it in sync as the userfs-resize re-verification and any rollback-mechanism
-fix land.
+it in sync as further testing lands.
