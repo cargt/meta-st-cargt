@@ -26,4 +26,12 @@ SRC_URI += "file://0003-fsck-userfs-twice-before-resizing.patch"
 # outlasted OP-TEE's own watchdog and reset the board mid-scan, repeatedly,
 # with no journal/pstore trace since it happens before Linux userspace
 # ever starts).
-SRC_URI:append = "${@bb.utils.contains('DISTRO_FEATURES', 'rauc', ' file://0002-skip-first-boot-resize-for-fixed-size-ab-partitions.patch file://0004-skip-userfs-resize-if-already-done.patch', '', d)}"
+#
+# 0004's marker WRITE (not its check, which is correct and stays) turned
+# out to be actively harmful on the SD card build: this script always
+# runs before resize-helper.service, so it was permanently winning the
+# race to mark userfs "done" - via a resize2fs call that can't actually
+# grow a fixed-size GPT partition on SD card - before resize-helper.service
+# (the only script with the tools to fix that) ever got a chance to. See
+# 0005.
+SRC_URI:append = "${@bb.utils.contains('DISTRO_FEATURES', 'rauc', ' file://0002-skip-first-boot-resize-for-fixed-size-ab-partitions.patch file://0004-skip-userfs-resize-if-already-done.patch file://0005-dont-mark-userfs-resized-from-the-initrd.patch', '', d)}"

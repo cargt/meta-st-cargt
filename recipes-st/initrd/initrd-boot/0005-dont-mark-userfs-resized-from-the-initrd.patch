@@ -1,0 +1,84 @@
+From: Cargt <tim.carney@cargt.com>
+Subject: [PATCH] init-resize: don't mark userfs resized from the initrd
+
+0004 gave this script's userfs case a marker check
+(/usr/local/.resize-helper-done, shared with resize-helper.service)
+to skip redundant work on subsequent boots - but it also had this
+script *write* that marker, unconditionally, right after its own
+e2fsck+resize2fs attempt, regardless of whether that attempt actually
+grew anything.
+
+On the SD card build, it never does: userfs is a small fixed-size GPT
+partition there (200M - see the sdcard .wks.in), and resize2fs only
+ever grows a filesystem to fill its *existing* partition boundary - it
+can't touch the partition table itself. This script's own resize2fs
+call was quietly a no-op that whole time, but wrote the "done" marker
+anyway. resize-helper.service - the only script in this BSP with the
+tools (sgdisk, resizepart) to actually extend the GPT partition first
+- runs later, checks the same marker, sees it already set, and skips
+its entire resize block, including the new extend logic added for
+exactly this problem. Since this script always runs first (initrd,
+before the real rootfs), it permanently wins that race on every single
+boot - the marker gets written here before resize-helper.service ever
+gets a chance to do the one thing that would actually work.
+
+Confirmed on hardware: added a debug line to resize-helper.service
+printing marker state at its own very first line - on a completely
+fresh SD card boot, marker was already 1 before resize-helper had done
+anything at all. Directly inspecting the built .wic image's userfs
+partition region (extracted and read with debugfs) confirmed the
+marker is not baked into the image itself - it's written live, this
+early, only by this script.
+
+This initrd environment doesn't have sgdisk/resizepart, so it can't
+be the one to actually fix userfs on SD card, and it has no way to
+tell "grew successfully" apart from "was already at its (still wrong)
+size, nothing to do" from resize2fs's exit status alone. Stop writing
+the marker here and leave that entirely to resize-helper.service, the
+only script that can actually verify (and, on SD card, ensure) it's
+true. The fsck+resize2fs attempt itself is left in place unchanged -
+on eMMC, where userfs's partition already fills the disk from flash
+time, it still does real, useful work early; it's only the marker
+write that was wrong.
+
+Upstream-Status: Pending [not sent upstream to ST - specific to a
+custom A/B partition scheme]
+
+Signed-off-by: Cargt <tim.carney@cargt.com>
+---
+diff --git a/init-resize.sh b/init-resize.sh
+index 1111111111..2222222222 100644
+--- a/init-resize.sh
++++ b/init-resize.sh
+@@ -83,11 +83,26 @@ resize_run() {
+                                         /sbin/e2fsck -f -y -c -C 0 $DEVICE
+                                         /sbin/e2fsck -f -y -C 0 $DEVICE
+                                         /sbin/resize2fs $DEVICE
+-                                        mkdir -p /tmp/userfs-mark
+-                                        mount $DEVICE /tmp/userfs-mark
+-                                        touch /tmp/userfs-mark/.resize-helper-done
+-                                        umount /tmp/userfs-mark
+-                                        rmdir /tmp/userfs-mark
++                                        # Deliberately NOT touching the marker here.
++                                        # On the SD card build, this resize2fs call
++                                        # cannot actually grow userfs - the GPT
++                                        # partition itself is fixed-size here, and
++                                        # only resize-helper.sh (which runs later,
++                                        # in the real rootfs, with sgdisk/resizepart
++                                        # available) can extend that partition table
++                                        # entry before resizing the filesystem into
++                                        # it. This initrd environment doesn't have
++                                        # those tools, and this stage has no way to
++                                        # tell "grew successfully" apart from "already
++                                        # at its (still wrong) size, nothing to do."
++                                        # Marking done here regardless of which one
++                                        # actually happened let this script win the
++                                        # race against resize-helper.sh - it always
++                                        # runs first - permanently skipping the one
++                                        # place that could actually fix userfs on SD
++                                        # card. Leave setting the marker entirely to
++                                        # resize-helper.sh, the only script that can
++                                        # verify (and, on SD card, ensure) it's true.
+                                     fi
+                                     ;;
+                                 root*)

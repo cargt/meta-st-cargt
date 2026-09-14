@@ -23,3 +23,21 @@ SRC_URI:append = "${@bb.utils.contains('DISTRO_FEATURES', 'rauc', ' file://0002-
 # re-runs on every OTA update's first boot into the newly-installed slot,
 # not just the very first boot ever. See the patch.
 SRC_URI:append = "${@bb.utils.contains('DISTRO_FEATURES', 'rauc', ' file://0003-skip-userfs-resize-if-already-done.patch', '', d)}"
+
+# Not RAUC-specific, though it was found via RAUC's SD card testing: any
+# board whose .wks.in gives userfs a small fixed size (with the rest of
+# the card intentionally left unpartitioned, expecting first-boot growth)
+# needs the GPT partition table entry itself extended before resize2fs/
+# systemd-growfs have anything to grow into - neither one ever touches
+# the partition table. Guarded to only act when userfs is genuinely the
+# last partition with real free space after it, so it's a safe no-op on
+# eMMC (already sized to fill the disk at flash time). Apply
+# unconditionally rather than gating it. See the patch.
+SRC_URI:append = " file://0004-extend-userfs-gpt-partition-before-growing-it.patch"
+
+# sgdisk/resizepart/lsblk (0004's patch) were only ever present on the
+# test images incidentally, pulled in by something else - make them a
+# real dependency so this doesn't silently no-op (its failure mode is
+# graceful, but silent) on a leaner image that happens not to include
+# them for some other reason.
+RDEPENDS:${PN} += " gptfdisk util-linux-resizepart util-linux-lsblk "
