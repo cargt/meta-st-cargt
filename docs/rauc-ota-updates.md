@@ -824,6 +824,34 @@ fw_printenv bootcmd altbootcmd altboot bootcount
     `root=` value, bank B booted cleanly again on the very next
     attempt, confirming the sabotage/recovery cycle leaves no lasting
     damage.
+- **btnxpuart Bluetooth power-save race causing a full system wedge:
+  found and fixed.** Both DUTs independently hung during ~7 hours of
+  otherwise unremarkable eMMC A/B soak testing - no Bluetooth-specific
+  activity in progress on either. Root-caused via live serial console:
+  a synchronous external abort in `stm32_usart_break_ctl`, called from
+  `btnxpuart`'s power-save workqueue racing the port being closed -
+  see the patch (`0012-bluetooth-btnxpuart-stop-ps-timer-work-before-close.patch`)
+  for the full mechanism. Confirmed the existing `0010` pm_runtime fix
+  did not prevent this: it manages a PM path that never actually gates
+  this port's clock. Also added `CONFIG_DETECT_HUNG_TASK` +
+  `CONFIG_BOOTPARAM_HUNG_TASK_PANIC` (timeout raised to 600s to avoid
+  false-positiving on the legitimate first-boot userfs resize scan) so
+  a future localized deadlock of this general shape reaches the
+  hardware watchdog automatically instead of silently persisting for
+  the rest of the system's uptime - confirmed no U-Boot changes are
+  needed for this, since `bootcount`/`bootlimit` are only ever tracked
+  while `upgrade_available=1` (an active RAUC trial), so a watchdog
+  reset during ordinary operation has no effect on A/B rollback
+  bookkeeping.
+
+  **Fix verified on both boards** after a physical power cycle and
+  reflash: 30 rapid `hciconfig hci0 down`/`up` cycles (deliberately
+  targeting the exact close-vs-power-save-workqueue race) produced zero
+  external aborts and zero stuck kworkers on either board, both
+  remaining fully responsive throughout. Not yet verified under
+  longer-duration/overnight soak conditions - the original failures
+  took hours of incidental Bluetooth activity to manifest, so this
+  stress test is strong evidence but not a full replacement for that.
 - **Autoboot partition-scan drift: PASS (fixed).** See §3.7 — a real
   patch (`0008-reset-distro_bootpart-around-scan_dev_for_boot_part.patch`)
   now clears `distro_bootpart` both before and after
