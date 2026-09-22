@@ -84,6 +84,18 @@ SRC_URI += "file://${LINUX_VERSION}/0011-usb-typec-tcpci-unmask-fault-vbus-discn
 # race and why it wedges the whole system, not just Bluetooth.
 SRC_URI += "file://${LINUX_VERSION}/0012-bluetooth-btnxpuart-stop-ps-timer-work-before-close.patch"
 
+# stm32_usart_shutdown() has the same non-blocking-pm_runtime_get()-vs-
+# immediate-hardware-teardown pattern 0010 fixed in break_ctl(), but at a
+# different call site: it races its own deferred runtime-PM resume
+# (queued on the "pm" workqueue) against its own RX DMA channel terminate
+# a few lines later, with no lock between them. Neither 0010 nor 0012
+# touch this path - 0012 only stops btnxpuart's ps timer/work from racing
+# close(), which doesn't help once shutdown() is running and simply
+# finds the port already suspended. Found via System_hanging.log (Oops
+# in vchan_tx_submit() on a LIST_POISON dereference). Generic driver
+# correctness fix, not tied to any one board - see the patch.
+SRC_URI += "file://${LINUX_VERSION}/0013-serial-stm32-fix-pm_runtime-race-in-shutdown-vs-rx-dma.patch"
+
 SRC_URI:class-devupstream += " file://${LINUX_VERSION}/cargt_00395_kernel_config_mods.config;subdir=fragments/features \
                                file://${LINUX_VERSION}/cargt_00378_kernel_config_mods.config;subdir=fragments/features \
                                file://${LINUX_VERSION}/cargt_00365_kernel_config_mods.config;subdir=fragments/features \
