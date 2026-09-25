@@ -1,14 +1,14 @@
 # RAUC A/B boards only: suffix bootfs/vendorfs/rootfs partition labels with
 # "-a" in the initial (first-flash) build's mount-partitions.sh, matching
 # the A/B slot naming added for RAUC OTA updates - userfs stays unsuffixed
-# (not A/B managed). "rauc" is a distro-wide feature (see the distro conf
-# commit), but this recipe is shared by every board built against
-# meta-st-cargt, RAUC or not - gate the "-a" suffixing on it, falling back
-# to upstream's own unsuffixed behavior otherwise, so non-RAUC boards
+# (not A/B managed). This recipe is shared by every board built against
+# meta-st-cargt, RAUC or not - gate the "-a" suffixing on COMBINED_FEATURES
+# "rauc" (distro feature AND the machine's MACHINE_FEATURES), falling back
+# to upstream's own unsuffixed behavior otherwise, so non-A/B boards
 # aren't left looking for partition labels that don't exist on their media.
 python set_partitions_list() {
     partitionsconfig = (d.getVar('PARTITIONS_IMAGES') or "").split()
-    rauc = bb.utils.contains('DISTRO_FEATURES', 'rauc', True, False, d)
+    rauc = bb.utils.contains('COMBINED_FEATURES', 'rauc', True, False, d)
 
     if len(partitionsconfig) > 0:
         partitionsconfigflags = d.getVarFlags('PARTITIONS_IMAGES')
@@ -29,3 +29,9 @@ python set_partitions_list() {
                             d.appendVar('MOUNT_PARTITIONS_LIST', ' ' + items[1] + '-a' + ',' + items[2])
                     break
 }
+
+# Content now depends on the machine (COMBINED_FEATURES includes
+# MACHINE_FEATURES), so this can't stay a shared tune-arch package: without
+# this, an A/B board and a single-bank board built in the same tree would
+# share (and overwrite) one package with the wrong content for one of them.
+PACKAGE_ARCH = "${MACHINE_ARCH}"

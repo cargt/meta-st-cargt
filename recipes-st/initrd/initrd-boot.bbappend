@@ -34,4 +34,23 @@ SRC_URI += "file://0003-fsck-userfs-twice-before-resizing.patch"
 # grow a fixed-size GPT partition on SD card - before resize-helper.service
 # (the only script with the tools to fix that) ever got a chance to. See
 # 0005.
-SRC_URI:append = "${@bb.utils.contains('DISTRO_FEATURES', 'rauc', ' file://0002-skip-first-boot-resize-for-fixed-size-ab-partitions.patch file://0004-skip-userfs-resize-if-already-done.patch file://0005-dont-mark-userfs-resized-from-the-initrd.patch', '', d)}"
+SRC_URI:append = "${@bb.utils.contains('COMBINED_FEATURES', 'rauc', ' file://0002-skip-first-boot-resize-for-fixed-size-ab-partitions.patch file://0004-skip-userfs-resize-if-already-done.patch file://0005-dont-mark-userfs-resized-from-the-initrd.patch', '', d)}"
+
+# Content now depends on the machine (COMBINED_FEATURES includes
+# MACHINE_FEATURES), so this can't stay a shared allarch package: without
+# this, an A/B board and a single-bank board built in the same tree would
+# share (and overwrite) one package with the wrong content for one of them.
+#
+# A plain PACKAGE_ARCH assignment (or override) doesn't work here:
+# allarch.bbclass force-sets PACKAGE_ARCH = "all" from a RecipePreFinalise
+# event handler, and setVar() there also drops active overrides. A second
+# handler registered here runs after allarch's, and allarch's own
+# anonymous python then leaves the recipe alone since PACKAGE_ARCH is no
+# longer "all" ("Allow this class to be included but overridden").
+# Nothing is compiled, so keep allarch's no-toolchain behavior by hand.
+python cargt_initrd_boot_machine_arch () {
+    d.setVar("PACKAGE_ARCH", "${MACHINE_ARCH}")
+}
+addhandler cargt_initrd_boot_machine_arch
+cargt_initrd_boot_machine_arch[eventmask] = "bb.event.RecipePreFinalise"
+INHIBIT_DEFAULT_DEPS = "1"

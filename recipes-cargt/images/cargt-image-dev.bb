@@ -70,8 +70,8 @@ CORE_IMAGE_EXTRA_INSTALL += " \
     packagegroup-core-buildessential \
     ${@bb.utils.contains('MACHINE_FEATURES', '00378', 'cc33xx-firmware','', d)} \
     ${@bb.utils.contains('MACHINE_FEATURES', '00395', 'kernel-module-nxp-wlan nxp-wlan-firmware-nxp-common nxp-wlan-firmware-nxpiw610-sdio','', d)} \
-    ${@bb.utils.contains('DISTRO_FEATURES', 'rauc', 'rauc rauc-conf fwu-gen-metadata-v2 u-boot-tools-stm32mp cargt-device-symlinks','', d)} \
-    ${@bb.utils.contains('DISTRO_FEATURES', 'rauc', 'rauc-hawkbit-updater','', d)} \
+    ${@bb.utils.contains('COMBINED_FEATURES', 'rauc', 'rauc rauc-conf fwu-gen-metadata-v2 u-boot-tools-stm32mp cargt-device-symlinks','', d)} \
+    ${@bb.utils.contains('COMBINED_FEATURES', 'rauc', 'rauc-hawkbit-updater','', d)} \
     kernel-modules \
     kernel-devsrc \
     udev-extraconf \
@@ -89,4 +89,4 @@ IMAGE_ROOTFS_MAXSIZE =  "2097152"
 cargt_write_ota_demo_marker () {
     echo "RAUC OTA demo build: $(date -u +%Y-%m-%dT%H:%M:%SZ)" > ${IMAGE_ROOTFS}${sysconfdir}/ota-demo-version
 }
-ROOTFS_POSTPROCESS_COMMAND += "${@bb.utils.contains('DISTRO_FEATURES', 'rauc', 'cargt_write_ota_demo_marker; ', '', d)}"
+ROOTFS_POSTPROCESS_COMMAND += "${@bb.utils.contains('COMBINED_FEATURES', 'rauc', 'cargt_write_ota_demo_marker; ', '', d)}"

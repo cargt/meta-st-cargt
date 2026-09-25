@@ -2,6 +2,10 @@ SUMMARY = "RAUC OTA update bundle for stm32mp25-cargt-00395-01-00365"
 
 inherit bundle
 
+# Slot image filenames below are this machine's; building it under any
+# other MACHINE can only fail (or, worse, pick up stale files).
+COMPATIBLE_MACHINE = "^stm32mp25-cargt-00395-01-00365$"
+
 # Must match [system] compatible= in recipes-core/rauc/files/stm32mp25-cargt-00395-01-00365/system.conf.
 RAUC_BUNDLE_COMPATIBLE = "cargt-stm32mp25-00395-01-00365"
 RAUC_BUNDLE_SLOTS = "fip bootfs vendorfs rootfs"

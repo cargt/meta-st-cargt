@@ -25,7 +25,7 @@ python do_create_flashlayout_config:append () {
     # original (unappended) body above already relies on without importing
     # it itself, breaking its earlier os.path.join() calls with
     # UnboundLocalError.
-    if not bb.utils.contains('DISTRO_FEATURES', 'rauc', True, False, d):
+    if not bb.utils.contains('COMBINED_FEATURES', 'rauc', True, False, d):
         return
 
     # Patch the WORKDIR staging tree, not DEPLOY_DIR_IMAGE - this task is

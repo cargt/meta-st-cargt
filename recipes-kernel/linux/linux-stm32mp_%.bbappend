@@ -7,9 +7,11 @@ KERNEL_CONFIG_FRAGMENTS:append:stm32mp2common = " ${@bb.utils.contains('MACHINE_
 KERNEL_CONFIG_FRAGMENTS:append:stm32mp2common = " ${@bb.utils.contains('MACHINE_FEATURES', '00393', '${WORKDIR}/fragments/features/${LINUX_VERSION}/cargt_00393_kernel_config_mods.config', '', d)} "
 
 # RAUC A/B OTA updates: dm-verity bundle verification + loop/dm/squashfs
-# support RAUC itself needs. Gated on DISTRO_FEATURES (not MACHINE_FEATURES)
-# since it's set distro-wide for cargt-openstlinux-weston, not per-board.
-KERNEL_CONFIG_FRAGMENTS:append = " ${@bb.utils.contains('DISTRO_FEATURES', 'rauc', '${WORKDIR}/fragments/features/${LINUX_VERSION}/cargt_rauc_kernel_config_mods.config', '', d)} "
+# support RAUC itself needs, plus the early-boot watchdog behavior change
+# rollback safety relies on. Gated on COMBINED_FEATURES "rauc" (distro
+# feature AND the A/B machines' MACHINE_FEATURES), so single-bank boards
+# built with the same distro are unaffected.
+KERNEL_CONFIG_FRAGMENTS:append = " ${@bb.utils.contains('COMBINED_FEATURES', 'rauc', '${WORKDIR}/fragments/features/${LINUX_VERSION}/cargt_rauc_kernel_config_mods.config', '', d)} "
 
 # Hung-task/workqueue-stall detection: not tied to any one board's
 # MACHINE_FEATURES or to RAUC - any board with a hardware watchdog armed
