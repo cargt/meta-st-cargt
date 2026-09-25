@@ -1,10 +1,12 @@
+# See docs/rauc-ota-updates.md for how to stand up your own hawkBit server
+# and register this target to get hawkbit_server/auth_token values for it.
 [client]
-hawkbit_server            = 10.64.152.198:8083
+hawkbit_server            = REPLACE_WITH_YOUR_HAWKBIT_SERVER_IP:8083
 ssl                       = false
 ssl_verify                = false
 tenant_id                 = DEFAULT
 target_name               = stm32mp25-cargt-00395-02-00365
-auth_token                = 1164594818e4e5cea811f9f1c321fa84
+auth_token                = REPLACE_WITH_YOUR_TARGET_SECURITY_TOKEN
 bundle_download_location  = /usr/local/rauc-hawkbit/bundle.raucb
 retry_wait                = 60
 connect_timeout           = 20

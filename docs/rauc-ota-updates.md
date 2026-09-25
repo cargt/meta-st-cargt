@@ -899,6 +899,104 @@ fw_printenv bootcmd altbootcmd altboot bootcount
   not `mmc0_extlinux/extlinux.conf` — see §2.5/§2.6. The latter is
   completely dormant on an eMMC-booting board; U-Boot never reads it.
 
+## 5. hawkBit Pull-Based OTA Testing (Optional)
+
+Everything above uses manual push testing (`scp` a bundle, `rauc install`
+over SSH). `rauc-hawkbit-updater` (in `recipes-support/`) adds the pull
+counterpart: a hawkBit server assigns a distribution set to a target, the
+device polls, downloads, and installs automatically. This is testing
+infrastructure only — the server is a plain Docker container on a dev
+machine, not anything production. `recipes-support/rauc-hawkbit-updater/files/config.conf.*`
+ships with placeholder `hawkbit_server`/`auth_token` values; follow this
+section to fill in your own.
+
+### 5.1 Stand up the server
+
+```bash
+cd docs/hawkbit && docker compose up -d
+```
+
+The server's Management/DDI REST API comes up on `:8083`; the browsable
+management UI (separate container, talks to the same server) on `:8088`,
+login `admin`/`admin`. **The server must be reachable from the DUTs** — bind/
+publish on this machine's real LAN IP, not `127.0.0.1`.
+
+This image doesn't ship the Vaadin management UI bundled into the main
+server container (older hawkBit versions did) — that's why it's a second
+container. The `hawkbit-ui` one only needs `hawkbit.server.mgmtUrl` pointed
+at the main server's internal Docker-network address, not the host's.
+
+### 5.2 Register each DUT as a target
+
+```bash
+curl -s -X POST http://<server-ip>:8083/rest/v1/targets \
+  -u admin:admin -H 'Content-Type: application/json' \
+  -d '[{"controllerId": "<MACHINE>", "name": "<friendly name>", "description": "..."}]'
+```
+
+The response's `securityToken` field is the `auth_token` value for that
+board's `config.conf.*`. `controllerId` must exactly match `target_name`
+in the config — this project uses the board's `MACHINE` name.
+
+By default hawkBit's DDI API doesn't accept per-target tokens at all
+(`authentication.targettoken.enabled` defaults to `false`) — enable it once,
+server-wide:
+
+```bash
+curl -s -X PUT http://<server-ip>:8083/rest/v1/system/configs/authentication.targettoken.enabled \
+  -u admin:admin -H 'Content-Type: application/json' -d '{"value": true}'
+```
+
+### 5.3 Push an update
+
+```bash
+# 1. Software module (one .raucb per version)
+SM_ID=$(curl -s -X POST http://<server-ip>:8083/rest/v1/softwaremodules \
+  -u admin:admin -H 'Content-Type: application/json' \
+  -d '[{"name": "cargt-image-dev", "version": "<version>", "type": "os"}]' \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)[0]['id'])")
+
+# 2. Upload the bundle as that module's artifact
+curl -s -X POST http://<server-ip>:8083/rest/v1/softwaremodules/$SM_ID/artifacts \
+  -u admin:admin -F "file=@update-st-bundle-<machine>.raucb;filename=bundle.raucb"
+
+# 3. Distribution set wrapping that module
+DS_ID=$(curl -s -X POST http://<server-ip>:8083/rest/v1/distributionsets \
+  -u admin:admin -H 'Content-Type: application/json' \
+  -d "[{\"name\": \"<name>\", \"version\": \"<version>\", \"type\": \"os\", \"modules\": [{\"id\": $SM_ID}]}]" \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)[0]['id'])")
+
+# 4. Assign - this is what actually triggers the device's next poll to act
+curl -s -X POST http://<server-ip>:8083/rest/v1/distributionsets/$DS_ID/assignedTargets \
+  -u admin:admin -H 'Content-Type: application/json' \
+  -d '[{"id": "<controllerId>"}]'
+```
+
+The device notices on its next poll (`retry_wait` in `config.conf`, default
+60s), downloads, installs via RAUC's D-Bus API, and — since
+`post_update_reboot = true` — reboots into the new slot on its own. No
+manual `rauc install`/reboot needed once this is wired up correctly.
+
+### 5.4 Target attributes (hostname / firmware version)
+
+`update-device-attrs.sh` (an `ExecStartPre` on the service) refreshes the
+config's `[device]` section with the live hostname (a unique per-board
+identifier, machine name + MAC address) and the current build's
+`/etc/ota-demo-version` marker on every start, so both show up as target
+attributes in the UI. hawkBit only *pushes* attributes to the server on
+demand, though — not on every poll. If they look stale, re-request them:
+
+```bash
+curl -s -X PUT http://<server-ip>:8083/rest/v1/targets/<controllerId> \
+  -u admin:admin -H 'Content-Type: application/json' -d '{"requestAttributes": true}'
+```
+
+**Verified on hardware, both DUTs**: 3 consecutive fully-automatic
+hawkBit-driven update cycles each (alternating A→B→A→B slots correctly
+every time), no manual intervention required once the bootloader
+activation fix (see this repo's commit history) and the config's `[device]` section were both in
+place.
+
 ## Testing status
 
 - **eMMC install/reboot/verify, both directions (A→B and B→A):** PASS.
