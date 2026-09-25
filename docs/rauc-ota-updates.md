@@ -1,6 +1,10 @@
 # RAUC A/B OTA Updates — STM32MP2 (00395-01-00365 / 00395-02-00365)
 
-> **Status: draft.** This describes the RAUC-based remote update mechanism
+> **Status: draft.** The custom bootloader backend was reworked and the
+> A/B pieces made per-machine after the testing described below — see
+> the first entry under "Testing status" before relying on it.
+>
+> This describes the RAUC-based remote update mechanism
 > added to `meta-st-cargt` / `meta-cargt-stm32mp-addons`, brought up on
 > `stm32mp25-cargt-00395-02-00365` first and then given full parity on
 > `stm32mp25-cargt-00395-01-00365` (§2.1). It's being written up for
@@ -94,11 +98,16 @@ of eMMC, so this has not been a real constraint so far, but it's the
 number to check against before ever considering smaller eMMC hardware
 for a board in this family.
 
-Defined in `meta-cargt-stm32mp-addons/wic/sdcard-stm32mp257f-cargt-00395-02-00365-optee-vendorfs-2GB.wks.in`
-(SD card `.wks.in`; ST's `flashlayout-stm32mp.bbclass` auto-generates the
-matching eMMC-production FlashLayout TSV from the same partition set, so
-both flashing paths — wic for SD card, `production_program_service.py` for
-eMMC — stay in sync automatically from this one file). `00395-01-00365`
+There are **two sources of truth** for this layout, which must be kept
+in step by hand:
+- **SD card**: `meta-cargt-stm32mp-addons/wic/sdcard-stm32mp257f-cargt-00395-02-00365-optee-vendorfs-2GB.wks.in`
+  (and the `-optee-2GB` variant) — the `.wic` image.
+- **eMMC**: ST's `flashlayout-stm32mp.bbclass` generates a single-bank
+  FlashLayout TSV from `PARTITIONS_IMAGES` (not from the `.wks.in`), and
+  `recipes-cargt/images/cargt-rauc-ab-flashlayout.inc` then splices it
+  into the A/B layout (`bootfs`/`vendorfs`/`rootfs` → `-a`/`-b`, only
+  for the main `CUBEMX_DTB` TSV, fastboot and optee bootschemes). Used by
+  STM32CubeProgrammer / `production_program_service.py`. `00395-01-00365`
 was brought up to the same layout afterward, in its own equivalently-named
 `.wks.in` files - same partition structure and sizes, same minimum-media-size
 guidance above.
@@ -128,13 +137,78 @@ guidance above.
 4. **Linux boots**; `rauc.slot=` on `/proc/cmdline` tells RAUC and every
    other consumer which bank is currently running.
 5. **Trial/good-boot**: a newly-installed bank boots in *trial* state
-   (FWU metadata bank_state = `V`). RAUC's `rauc-mark-good.service`
-   (shipped by the `rauc` recipe itself, no local patch) calls `rauc
-   status mark-good` after a successful boot, which invokes
-   `st-boot-script.sh get-primary` → `update_metadata.sh ... accept`,
-   flipping the bank to `A` (Accepted). **This bookkeeping is currently
-   the only thing tracking accept/trial state — nothing in the boot chain
-   actually acts on it if a boot fails. See §2.5.**
+   (FWU metadata bank_state = `V`, U-Boot `upgrade_available=1`).
+   RAUC's `rauc-mark-good.service` (shipped by the `rauc` recipe itself,
+   no local patch; `After=boot-complete.target`) calls `rauc status
+   mark-good`, which RAUC turns into `st-boot-script.sh set-state <A|B>
+   good`. That is the one place a trial is accepted: FWU metadata →
+   `A` (Accepted), `bootcmd`/`altbootcmd` resynced to the running bank,
+   bootcount disarmed. If the trial bank never gets that far, U-Boot's
+   bootcount falls back to the other bank after `bootlimit` attempts
+   (§2.5). Nothing currently hooks application-level health checks into
+   `boot-complete.target`, so "good" today means "reached
+   `multi-user.target`".
+
+### 2.3 Update flow (what `rauc install` actually does)
+
+Order as implemented by RAUC 1.15.2 (`src/install.c`):
+
+1. RAUC verifies the bundle's signature against `/etc/rauc/ca.cert.pem`.
+2. RAUC calls `st-boot-script.sh set-state <target> bad` *before* writing
+   anything. The backend records the target in `rauc_bad`, and if that
+   bank was still pending as primary from an earlier, not-yet-rebooted
+   install, points `bootcmd` back at the running bank — so an interrupted
+   write can never be booted.
+3. RAUC writes each bundle slot (`fip`, `bootfs`, `vendorfs`, `rootfs`)
+   straight to the **inactive** bank's partitions.
+4. RAUC calls `st-boot-script.sh set-primary <A|B>`, which commits the
+   new bank as "boot this one next" by rewriting U-Boot's `bootcmd`/
+   `altbootcmd` and arming bootcount (§2.2 step 2, §2.5), and clears the
+   bank's `rauc_bad` entry.
+5. RAUC's post-install handler, `post-install.sh`, runs:
+   - Mounts the newly-written `bootfs-X`, patches its `extlinux.conf`:
+     `root=/dev/mmcblk<N>p10` → `p11` (or vice versa) and
+     `rauc.slot=A` → `rauc.slot=B` (or vice versa), via regex substitution
+     against the "A is default" baked-in config.
+   - Mounts the newly-written `rootfs-X`, patches `mount-partitions.sh`'s
+     embedded `bootfs-a`/`vendorfs-a` label references to point at the
+     slot that was just installed.
+   - Calls `/usr/lib/fwu/update_metadata.sh <new> <old> refuse` — writes
+     `metadata1`/`metadata2` with the new bank marked `V` (trial) and the
+     current bank staying `A` (accepted), i.e. TF-A's trial mode is
+     armed for the new bank.
+   - Calls `st-boot-script.sh set-primary <new>` again — a redundant,
+     idempotent repeat of step 4, kept as a safety net (see the comment in
+     `post-install.sh`).
+6. Device reboots (not automatic — the caller decides when).
+
+### 2.4 Device-scoped partition resolution (`/run/cargt-part/`)
+
+eMMC and SD card carry **identically-named** GPT partitions (the same
+image gets flashed to either). `/dev/disk/by-partlabel/<name>` is a
+system-wide symlink — ambiguous whenever both devices are present at once
+(eMMC is always present; SD card whenever inserted), and not guaranteed to
+resolve to the device actually being booted from.
+
+`cargt-device-symlinks.service` (a small oneshot script, runs early in
+boot, `Before=... rauc.service`) determines which physical `mmcblkN` the
+running root filesystem actually lives on (via `findmnt` on `/`), then
+creates `/run/cargt-part/<name>` symlinks scoped to *that* device only —
+reusing the same device-detection technique already proven by
+`mount-partitions.sh` for `/boot`/`/vendor`/`/usr/local`. Every RAUC
+consumer (`system.conf`, `post-install.sh`, `update_metadata.sh`,
+`fw_env.config`) references `/run/cargt-part/<name>`, never
+`/dev/disk/by-partlabel/<name>` directly.
+
+**The one exception**: the kernel's own `root=` cmdline argument. It's
+resolved by the kernel *before* any userspace symlink service can run, so
+it must be a literal `/dev/mmcblk<N>p<M>` device path, not a label/UUID —
+set per-target (`UBOOT_EXTLINUX_ROOT:target-emmc` /
+`:target-sdcard`) in the machine conf. U-Boot's extlinux boot flow does
+generate two separate config directories per bootfs image
+(`mmc0_extlinux/`, `mmc1_extlinux/`, each with the correct device-specific
+`root=` baked in); U-Boot picks between them via `boot_prefixes` — see
+§2.6 for the SD card issues this caused and how they were resolved.
 
 ### 2.5 Rollback safety: env-based bootcount (implemented and confirmed working end-to-end)
 
@@ -177,19 +251,32 @@ interactive prompt with no recovery attempt.
   `set-primary` set it explicitly every time makes the fix
   self-installing regardless of when a given board's environment was
   first created.
-- `st-boot-script.sh get-primary` is now a pure read-only query (just
-  reports the current bank from `/proc/cmdline`) — it no longer calls
-  `update_metadata.sh ... accept` itself, fixing a second, related issue
-  where "accept" used to fire on the first status query after boot,
-  before any real health checkpoint.
-- `st-boot-script.sh get-state` (invoked by `rauc-mark-good.service`
-  after a real health checkpoint) does the actual accept
-  (`update_metadata.sh ... accept`), resyncs `bootcmd`/`altbootcmd` to
-  whatever bank is *currently* running, and disarms
-  (`upgrade_available=0`, `bootcount=0`). This runs identically whether
-  the current bank is good because a fresh install succeeded, or because
-  U-Boot's own bootcount mechanism already fell back to it automatically
-  — either way, "whatever's running now" becomes the new baseline.
+- `st-boot-script.sh` implements all four RAUC custom-backend verbs
+  (RAUC 1.15 `src/bootloaders/custom.c`). The split that matters:
+  **`get-primary`/`get-state` are strictly read-only**, and the only
+  thing that accepts a trial is **`set-state <booted> good`**, which is
+  what `rauc status mark-good` actually invokes.
+
+  An earlier version put the accept logic in `get-state` and had no
+  `set-state` handler at all (so `set-state` silently exited 0). It
+  only appeared to work because `rauc status mark-good` fetches slot
+  status — which calls `get-state A`/`get-state B` — before marking. The
+  side effect was that *any* status query (`rauc status` over SSH, a
+  D-Bus `GetSlotStatus` from an update agent) accepted the running bank
+  and disarmed bootcount, and `rauc status mark-bad` did nothing.
+
+  | Verb | Called by | Does |
+  |---|---|---|
+  | `get-primary` | `rauc status`, D-Bus | Prints the bank the next boot lands on: `bootcmd`'s bank, or `altbootcmd`'s if bootcount is already past `bootlimit`. |
+  | `get-state X` | `rauc status`, D-Bus, and the status fetch inside `mark-good` | Prints `bad` if X is in `rauc_bad`, or X is `bootcmd`'s bank, not running, and its trial is exhausted; otherwise `good`. No writes. |
+  | `set-primary X` | `rauc install` after writing; `rauc status mark-active` | `bootcmd`→X, `altbootcmd`→other, `bootlimit=3`, `bootcount=0`, `upgrade_available=1` (0 if X is the running bank), removes X from `rauc_bad`. |
+  | `set-state X good` | `rauc status mark-good` (`rauc-mark-good.service`) | X running: FWU-accept X, resync `bootcmd`/`altbootcmd` to X, disarm; if we got here by fallback (trial exhausted), also adds the failed bank to `rauc_bad`. If an install into the other bank is pending and not yet booted, only clears X's bad mark (a manual `mark-good` before the reboot doesn't cancel the update). X not running: only clears X's bad mark. |
+  | `set-state X bad` | `rauc install` (target, before writing); `rauc status mark-bad` | X not running: adds X to `rauc_bad`, re-baselines on the running bank (cancels a pending boot into X). X running: switches to the other bank (FWU-accepted, no trial) — refused if the other bank is in `rauc_bad` or has no ext4 superblock on its rootfs (e.g. the empty `-b` bank of a freshly flashed board). |
+
+  `rauc_bad` is a new U-Boot env variable (space-separated bootnames)
+  owned by this script; U-Boot itself ignores it. Every change is
+  written as a single `fw_setenv --script -` transaction, so power loss
+  mid-update can't leave `bootcmd` and `altbootcmd` out of step.
 
 **A deployment gotcha worth knowing**: after changing `st-boot-script.sh`
 (or any file that ends up in a bundle), the bundle **must be rebuilt**
@@ -312,57 +399,6 @@ redeploying just the FIP (no full image rebuild needed — only the
 U-Boot/TF-A/OP-TEE binary changes for this), the full mechanism worked
 correctly on the very first try — see "Testing status".
 
-### 2.3 Update flow (what `rauc install` actually does)
-
-1. RAUC verifies the bundle's signature against `/etc/rauc/ca.cert.pem`
-   and writes each bundle slot (`fip`, `bootfs`, `vendorfs`, `rootfs`)
-   straight to the **inactive** bank's partitions.
-2. RAUC's post-install handler, `post-install.sh`, runs:
-   - Mounts the newly-written `bootfs-X`, patches its `extlinux.conf`:
-     `root=/dev/mmcblk<N>p10` → `p11` (or vice versa) and
-     `rauc.slot=A` → `rauc.slot=B` (or vice versa), via regex substitution
-     against the "A is default" baked-in config.
-   - Mounts the newly-written `rootfs-X`, patches `mount-partitions.sh`'s
-     embedded `bootfs-a`/`vendorfs-a` label references to point at the
-     slot that was just installed.
-   - Calls `/usr/lib/fwu/update_metadata.sh <new> <old> refuse` — writes
-     `metadata1`/`metadata2` with the new bank marked `V` (trial) and the
-     current bank staying `A` (accepted), i.e. bootcount/trial mode is
-     armed for the new bank.
-3. RAUC's custom bootloader backend, `st-boot-script.sh`, is called with
-   `set-primary <A|B>` — this is what actually commits the new bank as
-   "boot this one next" by rewriting U-Boot's `bootcmd` (§2.2 step 2).
-4. Device reboots (not automatic — the caller decides when).
-
-### 2.4 Device-scoped partition resolution (`/run/cargt-part/`)
-
-eMMC and SD card carry **identically-named** GPT partitions (the same
-image gets flashed to either). `/dev/disk/by-partlabel/<name>` is a
-system-wide symlink — ambiguous whenever both devices are present at once
-(eMMC is always present; SD card whenever inserted), and not guaranteed to
-resolve to the device actually being booted from.
-
-`cargt-device-symlinks.service` (a small oneshot script, runs early in
-boot, `Before=... rauc.service`) determines which physical `mmcblkN` the
-running root filesystem actually lives on (via `findmnt` on `/`), then
-creates `/run/cargt-part/<name>` symlinks scoped to *that* device only —
-reusing the same device-detection technique already proven by
-`mount-partitions.sh` for `/boot`/`/vendor`/`/usr/local`. Every RAUC
-consumer (`system.conf`, `post-install.sh`, `update_metadata.sh`,
-`fw_env.config`) references `/run/cargt-part/<name>`, never
-`/dev/disk/by-partlabel/<name>` directly.
-
-**The one exception**: the kernel's own `root=` cmdline argument. It's
-resolved by the kernel *before* any userspace symlink service can run, so
-it must be a literal `/dev/mmcblk<N>p<M>` device path, not a label/UUID —
-set per-target (`UBOOT_EXTLINUX_ROOT:target-emmc` /
-`:target-sdcard`) in the machine conf. U-Boot's extlinux boot flow does
-generate two separate config directories per bootfs image
-(`mmc0_extlinux/`, `mmc1_extlinux/`, each with the correct device-specific
-`root=` baked in) — **but as of this writing, U-Boot does not actually
-select the one matching the device it's booting from.** See §2.6 — this
-is currently the blocking issue for SD card boot.
-
 ### 2.6 SD card boot: two bugs found and fixed — now working
 
 **Confirmed working on hardware.** Bringing up SD card boot for the
@@ -420,6 +456,18 @@ SD card, not just when booted from eMMC.
    `env set boot_prefixes "/mmc${devnum}_"` before
    `run scan_dev_for_boot_part`.
 
+   **Caveat: this change is not in either layer.** No U-Boot patch,
+   env file or script in `meta-st-cargt`/`meta-cargt-stm32mp-addons`
+   sets `boot_prefixes` from `${devnum}`; the only thing that sets it is
+   ST's sample `boot.scr` (`meta-st-stm32mp/.../stm32mp-extlinux/boot.scr.cmd`,
+   from `${boot_device}${boot_instance}`, which is correct whenever
+   U-Boot itself was loaded from the device being booted). It was most
+   likely only ever applied to a test board's persisted environment. It
+   matters only for the "U-Boot from eMMC, Linux from SD card" case; the
+   supported SD card configuration (boot straps set so U-Boot also comes
+   from the SD card, below) works without it. If that mixed case is ever
+   needed, carry it as a real U-Boot patch.
+
 **Both bugs needed fixing together** — fixing only #1 without #2 would
 have U-Boot keep resolving `/mmc1_extlinux/` (eMMC's config) regardless,
 silently booting the wrong device's rootfs while appearing to test the
@@ -469,37 +517,39 @@ RAUC A/B OTA update cycle confirmed working on the SD card.
 | Repo | What it holds |
 |---|---|
 | `meta-st-cargt` | All RAUC recipes/patches, TF-A/U-Boot/kernel changes, bundle recipe, systemd units |
-| `meta-cargt-stm32mp-addons` | Machine conf (`UBOOT_EXTLINUX_*`, `rauc.slot=A` default), `.wks.in` partition layout, `fw_env.config` |
+| `meta-cargt-stm32mp-addons` | Machine conf (`MACHINE_FEATURES += "rauc"`, `UBOOT_EXTLINUX_*`, `rauc.slot=A` default), `.wks.in` partition layout |
 | manifest (`cargt-stm32mp2.xml`) | Pins `rauc/meta-rauc` as a layer dependency |
 
 ### 3.2 Key files (`meta-st-cargt`)
 
 | File | Purpose |
 |---|---|
-| `conf/distro/cargt-openstlinux-weston.conf` | `DISTRO_FEATURES += "gplv3 rauc"` — gates every RAUC-conditional recipe/patch below |
+| `conf/distro/cargt-openstlinux-weston.conf` | `DISTRO_FEATURES += "gplv3 rauc"` — makes RAUC available distro-wide (meta-rauc requires it). It does **not** by itself enable A/B: every A/B-conditional recipe/patch below gates on `COMBINED_FEATURES` containing `rauc`, i.e. this distro feature **and** `MACHINE_FEATURES += "rauc"` in the machine conf (§3.3) |
 | `recipes-bsp/u-boot/u-boot-stm32mp/0006-stm32mpu-update-env-to-support-boot-A-B.patch` | Adds `altboot`/`altbootcmd` env vars to the stm32mp defconfig (ported from ST's `meta-st-ota`) |
 | `recipes-bsp/u-boot/u-boot-stm32mp/0007-enable-bootcount-env-for-ab-rollback-safety.patch` | Disables the (confirmed-inert) `CONFIG_FWU_MULTI_BANK_UPDATE`, enables `CONFIG_BOOTCOUNT_LIMIT`/`CONFIG_BOOTCOUNT_ENV` — the actual rollback-safety mechanism (§2.5) |
 | `recipes-bsp/u-boot/u-boot-stm32mp/0008-reset-distro_bootpart-around-scan_dev_for_boot_part.patch` | Fixes the autoboot partition-scan drift bug (§3.7) — clears `distro_bootpart` before and after `scan_dev_for_boot_part`'s loop |
-| `recipes-bsp/trusted-firmware-a/tf-a-stm32mp/0002-add-logs-for-demo-purpose.patch` | NOTICE-level bank-selection logging, for visibility during bring-up |
+| `recipes-bsp/trusted-firmware-a/tf-a-stm32mp/0002-add-logs-for-demo-purpose.patch` | NOTICE-level bank-selection logging, for visibility during bring-up (drop for production) |
+| `recipes-bsp/u-boot/libubootenv/<machine>/fw_env.config` | A/B machines point at `/run/cargt-part/u-boot-env`, not `/dev/disk/by-partlabel/u-boot-env` (§2.4); other machines keep by-partlabel |
 | `recipes-kernel/linux/linux-stm32mp/6.6/cargt_rauc_kernel_config_mods.config` | `CONFIG_BLK_DEV_LOOP`, `CONFIG_SQUASHFS`, `CONFIG_MD`, `CONFIG_BLK_DEV_DM`, `CONFIG_BLK_DEV_NBD`, `CONFIG_DM_VERITY`, `CONFIG_CRYPTO_SHA256` — required for RAUC's dm-verity bundle format; also `# CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED is not set` (§2.5's root cause #2) |
 | `recipes-kernel/linux/linux-stm32mp/6.6/cargt_watchdog_hardening_kernel_config_mods.config` | `CONFIG_DETECT_HUNG_TASK` + `CONFIG_BOOTPARAM_HUNG_TASK_PANIC` + `CONFIG_WQ_WATCHDOG` (§3.8) — applied unconditionally, not RAUC-gated, since it benefits any board with a hardware watchdog armed |
 | `recipes-kernel/linux/linux-stm32mp/6.6/0010-serial-stm32-fix-break_ctl-pm_runtime-race.patch`, `0012-bluetooth-btnxpuart-stop-ps-timer-work-before-close.patch` | The Bluetooth power-save race fix (`0012`) and its predecessor (`0010`, kept but not sufficient alone — see §3.8) |
-| `recipes-core/rauc/rauc_%.bbappend` + `files/0001-support-bin-extension.patch` | Patches RAUC's `update_handler.c` so it accepts `*.bin` images as `raw` slot type (needed for the fip binary) |
-| `recipes-core/rauc/rauc-conf.bbappend` + `files/<machine>/system.conf`, `files/post-install.sh`, `files/st-boot-script.sh`, `files/ca.cert.pem` | The actual RAUC config + custom bootloader backend + post-install patching logic (see §2.3/2.4) — `system.conf` is per-machine (only its `compatible=` line differs), one subdirectory per board |
+| `recipes-core/rauc/rauc_%.bbappend` + `files/0001-support-bin-extension.patch` | Patches RAUC's `update_handler.c` so it accepts `*.bin` images as `raw` slot type (needed for the fip binary). Applied unconditionally (harmless without A/B) |
+| `recipes-core/rauc/rauc-conf.bbappend` + `files/<machine>/system.conf`, `files/post-install.sh`, `files/st-boot-script.sh`, `files/ca.cert.pem` | The actual RAUC config + custom bootloader backend (§2.5) + post-install patching logic (§2.3) — `system.conf` is per-machine (only its `compatible=` line differs), one subdirectory per board. Only installed on A/B machines; others get meta-rauc's stock example config. `PACKAGE_ARCH = MACHINE_ARCH` |
 | `recipes-core/fwu-gen-metadata/fwu-gen-metadata-v2.bb` + `files/update_metadata.sh` | Writes TF-A FWU metadata (v2 format) via `mkfwumdata`; fixed platform-wide UUIDs, not per-board |
-| `recipes-core/bundles/update-st-bundle-stm32mp25-cargt-00395-02-00365.bb`, `update-st-bundle-stm32mp25-cargt-00395-01-00365.bb` | The bundle recipes, one per board (slots, compatible string, signing key/cert) |
+| `recipes-core/bundles/update-st-bundle-stm32mp25-cargt-00395-02-00365.bb`, `update-st-bundle-stm32mp25-cargt-00395-01-00365.bb` | The bundle recipes, one per board (slots, compatible string, signing key/cert), each with `COMPATIBLE_MACHINE` restricted to its own board |
 | `recipes-core/systemd/cargt-device-symlinks_1.0.bb` | The `/run/cargt-part/` symlink service (§2.4) |
-| `recipes-core/systemd/systemd-mount-partitions.bbappend` | Adds `-a` suffix to bootfs/vendorfs/rootfs in `MOUNT_PARTITIONS_LIST` (not userfs) |
-| `recipes-core/udev/udev-extraconf_%.bbappend` + `files/cargt-ab-partitions.ignorelist` | Excludes A/B partitions (mmc[01]p1–p11) from udev's generic auto-mounter — without this, the automounter races RAUC for exclusive access to the inactive slot ("Device or resource busy") |
+| `recipes-core/systemd/systemd-mount-partitions.bbappend` | Adds `-a` suffix to bootfs/vendorfs/rootfs in `MOUNT_PARTITIONS_LIST` (not userfs), A/B machines only |
+| `recipes-core/udev/udev-extraconf_%.bbappend` + `files/cargt-ab-partitions.ignorelist` | Excludes A/B partitions (eMMC `mmcblk1p1`–`p11`, SD card `mmcblk0p1`–`p13`; §3.5) from udev's generic auto-mounter — without this, the automounter races RAUC for exclusive access to the inactive slot ("Device or resource busy") |
 | `recipes-st/initrd/initrd-boot/0002-skip-first-boot-resize-for-fixed-size-ab-partitions.patch` | Skips `init-resize.sh`'s fsck/resize for `root*`/`vendor*`/`boot*` — those partitions are fixed-size, only `user*` needs it |
 | `recipes-st/initrd/initrd-boot/0004-skip-userfs-resize-if-already-done.patch`, `0005-dont-mark-userfs-resized-from-the-initrd.patch` | `0004` gives `init-resize.sh`'s `userfs` case the same persistent-marker check as `resize-helper` (§3.6); `0005` stops it from also *writing* that marker, since it always runs first and was winning the race to mark the job done before `resize-helper.service`'s real SD card fix ever got a chance (§3.6) |
-| `recipes-bsp/tools/resize-helper/0002-skip-fixed-size-ab-partitions.patch`, `0003-skip-userfs-resize-if-already-done.patch`, `0004-extend-userfs-gpt-partition-before-growing-it.patch` | Same idea for the other first-boot resize script; `0003` records a marker **on userfs itself** (not in `/etc`, which every OTA update reflashes) so the slow `e2fsck -c` bad-blocks pass only ever runs once; `0004` extends `userfs`'s GPT partition before growing it — the actual mechanical fix for the SD card `userfs`-stuck-at-200M bug (§3.6) |
-| `recipes-cargt/images/cargt-image-dev.bb` / `cargt-image-weston.bb` | Installs `rauc rauc-conf fwu-gen-metadata-v2 u-boot-tools-stm32mp cargt-device-symlinks` when `rauc` is in `DISTRO_FEATURES` |
+| `recipes-bsp/tools/resize-helper/0002-skip-fixed-size-ab-partitions.patch`, `0003-skip-userfs-resize-if-already-done.patch`, `0004-extend-userfs-gpt-partition-before-growing-it.patch` | Same idea for the other first-boot resize script; `0003` records a marker **on userfs itself** (not in `/etc`, which every OTA update reflashes) so the slow `e2fsck -c` bad-blocks pass only ever runs once; `0004` extends `userfs`'s GPT partition before growing it — the actual mechanical fix for the SD card `userfs`-stuck-at-200M bug (§3.6). All three are applied on A/B machines only — `0004` is written on top of `0003` and doesn't apply to the stock script |
+| `recipes-cargt/images/cargt-image-dev.bb` / `cargt-image-weston.bb` | Installs `rauc rauc-conf fwu-gen-metadata-v2 u-boot-tools-stm32mp cargt-device-symlinks` and applies the A/B flashlayout splice (`cargt-rauc-ab-flashlayout.inc`) when `rauc` is in `COMBINED_FEATURES` |
 
 ### 3.3 Key config (`meta-cargt-stm32mp-addons`)
 
 - `conf/machine/stm32mp25-cargt-00395-02-00365.conf`,
   `stm32mp25-cargt-00395-01-00365.conf` (same pattern, one per board):
+  `MACHINE_FEATURES += "rauc"` (the per-board A/B switch, §3.2);
   `UBOOT_EXTLINUX_KERNEL_ARGS:append = " rauc.slot=A"` (build-time default);
   `UBOOT_EXTLINUX_ROOT:target-emmc/:target-sdcard` (literal device paths,
   §2.4 — partition numbers confirmed via a live partition table dump on
@@ -512,21 +562,28 @@ RAUC A/B OTA update cycle confirmed working on the SD card.
   `uboot-env` (no dash) at one point and silently broke the SD-card-side
   symlink for that one partition until caught by inspecting the built
   `.wic` file's partition table before the first SD card flash.
-- `recipes-bsp/u-boot/libubootenv/.../fw_env.config`: points at
-  `/run/cargt-part/u-boot-env`, not `/dev/disk/by-partlabel/u-boot-env`
-  (§2.4).
 
 ### 3.4 Bundle contents
 
-`update-st-bundle-stm32mp25-cargt-00395-02-00365.bb`:
-- Slots: `fip`, `bootfs`, `vendorfs`, `rootfs` (matches `RAUC_BUNDLE_SLOTS`
-  in `system.conf`'s `compatible=` string:
-  `cargt-stm32mp25-00395-02-00365`).
+`update-st-bundle-stm32mp25-cargt-00395-02-00365.bb` (the `-01-` recipe
+is identical apart from the machine name):
+- Slots (`RAUC_BUNDLE_SLOTS`): `fip`, `bootfs`, `vendorfs`, `rootfs` —
+  each matching a `[slot.<name>.N]` class in `system.conf`.
+- Compatible (`RAUC_BUNDLE_COMPATIBLE`): `cargt-stm32mp25-00395-02-00365`,
+  which must equal `system.conf`'s `[system] compatible=` or RAUC refuses
+  the bundle.
 - Format: `verity` (dm-verity-hashed, per-slot).
-- Sourced from `st-image-bootfs`, `st-image-vendorfs`, and this layer's
-  actual top image recipe (`cargt-image-dev`/`cargt-image-weston`) — **not**
-  `st-image-weston`, which upstream reference material uses but which
-  isn't the real image built here.
+- Sourced from `st-image-bootfs`, `st-image-vendorfs`, and
+  **`cargt-image-dev`** for `rootfs` — hardcoded, including for boards
+  whose factory image is `cargt-image-weston` (upstream reference
+  material uses `st-image-weston`, which isn't the image built here).
+  Slot filenames hardcode the distro name too.
+- `fip` is the eMMC FIP (`...-optee-emmc.bin`); it is byte-identical to
+  the `-sdcard.bin` build, so the same bundle serves both media. It is the
+  main (all-displays) variant, so a board flashed with a per-panel
+  `-glt*` FIP gets the generic one on its first update.
+- `COMPATIBLE_MACHINE` restricts each bundle recipe to its own board.
+- No bundle version is set and there is no downgrade protection.
 - Signed with a development cert/key pair
   (`recipes-core/bundles/files/development-1.{key,cert}.pem`) verified
   against `/etc/rauc/ca.cert.pem` on target. **Replace both for
@@ -534,11 +591,14 @@ RAUC A/B OTA update cycle confirmed working on the SD card.
 
 ### 3.5 udev automount exclusion
 
-`cargt-ab-partitions.ignorelist` excludes `/dev/mmcblk[01]p1` through
-`p11` from the stock `udev-extraconf` automounter (which otherwise mounts
-every filesystem-bearing partition under `/run/media/`, active or
-inactive). `userfs` (p12) is intentionally left mountable — it's not part
-of the A/B scheme and isn't auto-mounted by anything else anyway.
+`cargt-ab-partitions.ignorelist` excludes eMMC `/dev/mmcblk1p1`–`p11`
+and SD card `/dev/mmcblk0p1`–`p13` (the SD card's extra `fsbla1`/`fsbla2`
+shift its numbering by 2) from the stock `udev-extraconf` automounter
+(which otherwise mounts every filesystem-bearing partition under
+`/run/media/`, active or inactive). `userfs` (eMMC p12, SD card p14) is
+intentionally left mountable — it's not part of the A/B scheme and isn't
+auto-mounted by anything else anyway. Installed only on A/B machines;
+`udev-extraconf` is therefore `MACHINE_ARCH`.
 
 ### 3.6 First-boot resize interactions
 
@@ -820,11 +880,32 @@ full replacement for that.
 
 ### 4.1 Build
 
+bitbake must run inside the `crops/poky:ubuntu-22.04-yocto-pkgs`
+container on build hosts newer than Ubuntu 22.04 (e.g. via
+`/yocto/run-docker-ai.sh`):
+
 ```sh
-bitbake cargt-image-dev
-bitbake update-st-bundle-stm32mp25-cargt-00395-02-00365
+/yocto/run-docker-ai.sh /mnt/build1/cln-mp2-ip \
+  'source layers/openembedded-core/oe-init-build-env build && \
+   bitbake cargt-image-dev update-st-bundle-stm32mp25-cargt-00395-02-00365'
 ```
-Bundle lands in `tmp-glibc/deploy/images/<machine>/update-st-bundle-stm32mp25-cargt-00395-02-00365.raucb`.
+`MACHINE` must be the board the bundle is for (the bundle recipes carry
+`COMPATIBLE_MACHINE`). The bundle recipe depends on its slot images, so
+building it alone also builds them. It lands in
+`tmp-glibc/deploy/images/<machine>/update-st-bundle-<machine>-<machine>.raucb`
+(a timestamped copy sits next to it).
+
+### 4.1a Initial flash
+
+The A/B layout is a different partition table, so a board still on the
+single-bank layout **cannot** be converted by OTA — flash it once:
+- eMMC: STM32CubeProgrammer with the patched
+  `FlashLayout_emmc_<CUBEMX_DTB>-optee.tsv` (the main variant, not a
+  `-glt*` one — only the main TSV is spliced to A/B).
+- SD card: the `.wic` / `.wic.bmap` from the same deploy directory.
+
+The `-b` bank starts empty (eMMC) or as a copy of `-a`'s FIP only (SD
+card); the first `rauc install` fills it.
 
 ### 4.2 Push and install
 
@@ -852,12 +933,20 @@ colored text directly is a real trap (see the Testing status note).
 ### 4.4 Manual bank inspection / control
 
 ```sh
-rauc status --detailed
-rauc status mark-good      # accept the current (trial) bank explicitly
-/usr/lib/rauc/st-boot-script.sh get-primary
-/usr/lib/rauc/st-boot-script.sh set-primary B
-fw_printenv bootcmd altbootcmd altboot bootcount
+rauc status --detailed                 # read-only: never accepts/disarms anything
+rauc status mark-good                  # accept the running (trial) bank
+rauc status mark-bad other             # cancel a pending, not-yet-booted install
+rauc status mark-bad booted            # switch to the other bank on next boot
+rauc status mark-active other          # make the other bank primary (arms a trial)
+/usr/lib/rauc/st-boot-script.sh get-primary      # bank the next boot lands on
+/usr/lib/rauc/st-boot-script.sh get-state B      # good | bad
+fw_printenv bootcmd altbootcmd upgrade_available bootcount bootlimit rauc_bad
 ```
+`get-primary` reports the bank U-Boot will boot next, not the one
+currently running (that's `rauc.slot=` on `/proc/cmdline`, or `booted:`
+in `rauc status`). Right after `rauc install` it already names the new
+bank. `rauc_bad` lists banks that failed a trial boot, were marked bad
+by hand, or were left half-written by an interrupted install.
 
 ### 4.5 Troubleshooting
 
@@ -876,7 +965,16 @@ fw_printenv bootcmd altbootcmd altboot bootcount
   installing into the other bank, `set-primary` didn't run or didn't
   persist; this is the "no automatic TF-A→U-Boot hand-off" gap described
   in §2.2 — the fix lives entirely in `st-boot-script.sh`'s `set-primary`
-  handler, so start there.
+  handler, so start there. If `bootcmd` names the new bank but the board
+  came back on the old one, check `bootcount` against `bootlimit` and
+  `rauc_bad`: the new bank failed its trial and U-Boot fell back (§2.5).
+- **Build fails with `rauc-conf` unable to find `<machine>/system.conf`,
+  or a single-bank board comes up looking for `bootfs-a`**: A/B gating
+  is off for that machine or wrongly on. Everything A/B-specific keys off
+  `COMBINED_FEATURES` containing `rauc` — check
+  `bitbake -e <recipe> | grep ^COMBINED_FEATURES=` and the machine conf's
+  `MACHINE_FEATURES += "rauc"`. See "Enabling A/B on another machine"
+  below.
 - **Deployed `st-boot-script.sh` doesn't match the local source file**:
   the bundle wasn't rebuilt after the last edit. Compare
   `md5sum /usr/lib/rauc/st-boot-script.sh` on target against the local
@@ -898,6 +996,40 @@ fw_printenv bootcmd altbootcmd altboot bootcount
   has no effect**: make sure you edited `mmc1_extlinux/extlinux.conf`,
   not `mmc0_extlinux/extlinux.conf` — see §2.5/§2.6. The latter is
   completely dormant on an eMMC-booting board; U-Boot never reads it.
+
+### 4.6 Enabling A/B on another machine
+
+Everything A/B-specific keys off `COMBINED_FEATURES` containing `rauc`
+(`DISTRO_FEATURES` "rauc" from the distro **and** `MACHINE_FEATURES`
+"rauc" from the machine conf), so a machine without it keeps its stock
+single-bank layout even when built with this distro. To add a board:
+
+1. Machine conf: `MACHINE_FEATURES += "rauc"`,
+   `UBOOT_EXTLINUX_KERNEL_ARGS:append = " rauc.slot=A"`, per-target
+   `UBOOT_EXTLINUX_ROOT` (literal `/dev/mmcblkNpM` of `rootfs-a` — check
+   the real partition numbers on each medium), rootfs/vendorfs/bootfs
+   sizes that fit twice (§2.1).
+2. `.wks.in` with the `-a`/`-b` partitions (§2.1); `rootfs-b` must
+   immediately follow `rootfs-a` (post-install.sh relies on it).
+3. `recipes-core/rauc/files/<machine>/system.conf` with a unique
+   `compatible=`.
+4. `recipes-bsp/u-boot/libubootenv/<machine>/fw_env.config` pointing at
+   `/run/cargt-part/u-boot-env`.
+5. A bundle recipe with matching `RAUC_BUNDLE_COMPATIBLE`, slot
+   filenames and `COMPATIBLE_MACHINE`.
+6. Check `cargt-ab-partitions.ignorelist` covers that board's A/B
+   partition numbers on each medium.
+7. Optional (hawkBit, §5): a `config.conf.<board>` and matching
+   `SRC_URI`/`do_install` override in `rauc-hawkbit-updater_%.bbappend`.
+
+Recipes whose content now depends on the machine because of this gating
+(`udev-extraconf`, `systemd-mount-partitions`, `resize-helper`,
+`initrd-boot`, `rauc-conf`) are `PACKAGE_ARCH = "${MACHINE_ARCH}"`, so
+A/B and single-bank boards built in one tree don't share a package.
+`initrd-boot` inherits `allarch`, which force-sets `PACKAGE_ARCH` from an
+event handler, so its bbappend overrides it from a second handler. The
+U-Boot patches `0006`–`0008` stay unconditional: without an armed trial
+(`upgrade_available=0`) they don't change boot behavior.
 
 ## 5. hawkBit Pull-Based OTA Testing (Optional)
 
@@ -1002,7 +1134,10 @@ curl -s -X PUT http://<server-ip>:8083/rest/v1/targets/<controllerId> \
 hawkBit-driven update cycles each (alternating A→B→A→B slots correctly
 every time), no manual intervention required once the bootloader
 activation fix (see this repo's commit history) and the config's `[device]` section were both in
-place.
+place. (That verification predates the backend rework in §2.5: the
+"activation fix" was likely compensating for the old `get-state` resetting
+`bootcmd` whenever hawkBit's D-Bus status query ran — repeat it on the
+reworked backend.)
 
 ### 5.5 Extended stress testing
 
@@ -1029,8 +1164,24 @@ failures over roughly 18 hours once the fixes above were in place (host
 key handling, `files-local/` config override, and the artifact-store
 reset), with 7 automatic resets happening transparently mid-run, and
 counting - this run is still going as of this writing.
+(Also run on the pre-rework backend — §2.5. It's the natural soak test to
+repeat on the reworked one; the script's `rauc status` checks are
+read-only either way.)
 
 ## Testing status
+
+- **Backend rework (`set-state`, read-only `get-state`/`get-primary`,
+  `rauc_bad`, single-transaction env writes) and per-machine A/B gating
+  (`MACHINE_FEATURES += "rauc"` / `COMBINED_FEATURES`): NOT YET TESTED
+  ON HARDWARE.** Verified so far: the backend's state transitions in a
+  host-side simulation (fake `fw_printenv`/`fw_setenv`: install, manual
+  mark-good before reboot, successful trial, failed trial + fallback,
+  mark-bad booted with and without a bootable other bank); bitbake parse
+  of the gated variables for `00395-02-00365` (A/B) and
+  `00395-00365v3` (single-bank). Everything below predates both changes
+  and needs repeating against a rebuilt image + bundle — at minimum an
+  A→B→A round trip, the rollback sabotage test, and confirming
+  `rauc status` no longer changes `upgrade_available`/`bootcount`.
 
 - **eMMC install/reboot/verify, both directions (A→B and B→A):** PASS.
   Confirmed via `rauc status`, `/proc/cmdline`, and a demo marker file.
