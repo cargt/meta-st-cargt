@@ -1,0 +1,18 @@
+[client]
+hawkbit_server            = 10.64.152.198:8083
+ssl                       = false
+ssl_verify                = false
+tenant_id                 = DEFAULT
+target_name               = stm32mp25-cargt-00395-02-00365
+auth_token                = 1164594818e4e5cea811f9f1c321fa84
+bundle_download_location  = /usr/local/rauc-hawkbit/bundle.raucb
+retry_wait                = 60
+connect_timeout           = 20
+timeout                   = 60
+low_speed_time            = 0
+low_speed_rate            = 0
+post_update_reboot        = true
+log_level                 = message
+
+[device]
+model                     = stm32mp25-cargt-00395-02-00365
