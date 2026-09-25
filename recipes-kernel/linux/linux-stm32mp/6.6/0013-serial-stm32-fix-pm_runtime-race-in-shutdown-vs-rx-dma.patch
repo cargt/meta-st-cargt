@@ -67,10 +67,7 @@ diff --git a/drivers/tty/serial/stm32-usart.c b/drivers/tty/serial/stm32-usart.c
 index 1111111111..2222222222 100644
 --- a/drivers/tty/serial/stm32-usart.c
 +++ b/drivers/tty/serial/stm32-usart.c
-@@ -1419,10 +1419,26 @@ static void stm32_usart_shutdown(struct uart_port *port)
- 	struct stm32_port *stm32_port = to_stm32_port(port);
- 	const struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
- 	const struct stm32_usart_config *cfg = &stm32_port->info->cfg;
+@@ -1422,7 +1422,23 @@ static void stm32_usart_shutdown(struct uart_port *port)
  	u32 val, isr;
  	int ret;
 
@@ -92,6 +89,6 @@ index 1111111111..2222222222 100644
 +	ret = pm_runtime_resume_and_get(port->dev);
 +	if (ret < 0)
 +		dev_err(port->dev, "Failed to resume port for shutdown: %d\n", ret);
-
+ 
  	if (stm32_usart_tx_dma_started(stm32_port))
  		stm32_usart_tx_dma_terminate(stm32_port);
