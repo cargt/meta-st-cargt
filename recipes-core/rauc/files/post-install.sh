@@ -148,3 +148,17 @@ subprocess.run(["/usr/lib/fwu/update_metadata.sh",
                  "%d" % boot_part_num_dico[next_boot_slot],
                  "%d" % boot_part_num_dico[current_boot_slot],
                  "refuse"], check=True)
+
+# Also arm U-Boot's own env-based bootcount safety net (upgrade_available/
+# bootcmd/altbootcmd/bootlimit) via the RAUC custom bootloader backend's
+# set-primary action. RAUC does NOT invoke bootloader-custom-backend
+# automatically as part of a normal install - its "Marking target slot ...
+# as bootable" log line is only RAUC's own internal slot-status bookkeeping,
+# not a call into system.conf's configured backend script. Without this,
+# the TF-A FWU metadata above correctly selects the new bank, but U-Boot's
+# own bootcmd is left unchanged (still pointing at the current slot), so it
+# just keeps booting the old slot forever - confirmed on hardware: two
+# separate installs (one hawkBit-driven, one manual `rauc install`) both
+# left the board on slot A after reboot despite "active boot is B" in this
+# script's own log, until st-boot-script.sh set-primary was run by hand.
+subprocess.run(["/usr/lib/rauc/st-boot-script.sh", "set-primary", next_boot_slot], check=True)
