@@ -10,7 +10,10 @@ rauc.slot=) and the newly-installed rootfs's mount-partitions.sh (bootfs/
 vendorfs partition-label references) to point at the slot that was just
 installed, then puts that slot into FWU "trial" state so TF-A/U-Boot boot
 into it once, falling back to the previous slot if it doesn't reach a good
-boot (see st-status-mark-good.sh / rauc-mark-good.service).
+boot (see st-boot-script.sh set-state / rauc-mark-good.service).
+
+RAUC runs this AFTER st-boot-script.sh set-primary has already pointed
+U-Boot's bootcmd at the new slot.
 """
 
 import ctypes
