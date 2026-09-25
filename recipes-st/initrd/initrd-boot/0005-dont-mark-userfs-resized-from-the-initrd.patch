@@ -50,8 +50,8 @@ diff --git a/init-resize.sh b/init-resize.sh
 index 1111111111..2222222222 100644
 --- a/init-resize.sh
 +++ b/init-resize.sh
-@@ -83,11 +83,26 @@ resize_run() {
-                                         /sbin/e2fsck -f -y -c -C 0 $DEVICE
+@@ -96,11 +96,26 @@ resize_run() {
+                                         /sbin/e2fsck -f -y -C 0 $DEVICE
                                          /sbin/e2fsck -f -y -C 0 $DEVICE
                                          /sbin/resize2fs $DEVICE
 -                                        mkdir -p /tmp/userfs-mark

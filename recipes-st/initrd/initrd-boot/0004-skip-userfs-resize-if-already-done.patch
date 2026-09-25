@@ -43,7 +43,7 @@ custom A/B partition scheme]
 
 --- a/init-resize.sh
 +++ b/init-resize.sh
-@@ -40,22 +40,55 @@
+@@ -40,22 +40,68 @@
                              if [ $? -eq 0 ]; then
                                  case $label in
                                  user*)
@@ -91,19 +91,32 @@ custom A/B partition scheme]
 +                                        echo "SKIP USERFS [$DEVICE] (already resized)"
 +                                    else
 +                                        echo "RESIZE USERFS [$DEVICE]"
-+                                        # A single e2fsck pass isn't enough on a
-+                                        # never-before-checked filesystem: when it
-+                                        # actually fixes something (common on a
-+                                        # fresh image's very first real check,
-+                                        # reported as "FILE SYSTEM WAS MODIFIED"),
-+                                        # resize2fs refuses to run against it
-+                                        # ("Please run 'e2fsck -f' first") even
++                                        # No -c (bad-blocks) pass: it does a full
++                                        # raw read of every sector, which on a
++                                        # truly virgin, full-size userfs (~22-26GB)
++                                        # takes minutes - long enough that OP-TEE's
++                                        # own watchdog (stm32_iwdg) panics and
++                                        # resets the SoC before it finishes, since
++                                        # nothing feeds that watchdog this early in
++                                        # boot (confirmed on hardware: a real reset
++                                        # loop on first boot into a freshly-flashed
++                                        # board, stuck at ~2.68% after 8s - a full
++                                        # pass would take ~5 minutes). eMMC/SD flash
++                                        # remaps bad physical blocks internally via
++                                        # its own FTL and doesn't expose them to the
++                                        # OS the way a rotational disk would, so this
++                                        # check has little practical value here
++                                        # anyway. A single fast consistency-only
++                                        # pass isn't enough on a never-before-checked
++                                        # filesystem: when it actually fixes something
++                                        # (common on a fresh image's very first real
++                                        # check, reported as "FILE SYSTEM WAS
++                                        # MODIFIED"), resize2fs refuses to run against
++                                        # it ("Please run 'e2fsck -f' first") even
 +                                        # though e2fsck just ran - it wants a
-+                                        # subsequent CLEAN pass before trusting
-+                                        # the filesystem enough to resize it. Run
-+                                        # a second, fast recheck (no -c bad-blocks
-+                                        # rescan needed) to satisfy that.
-+                                        /sbin/e2fsck -f -y -c -C 0 $DEVICE
++                                        # subsequent clean pass before trusting the
++                                        # filesystem enough to resize it. Run it twice.
++                                        /sbin/e2fsck -f -y -C 0 $DEVICE
 +                                        /sbin/e2fsck -f -y -C 0 $DEVICE
 +                                        /sbin/resize2fs $DEVICE
 +                                        mkdir -p /tmp/userfs-mark
