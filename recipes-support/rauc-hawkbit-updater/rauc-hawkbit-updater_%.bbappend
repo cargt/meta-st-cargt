@@ -24,6 +24,14 @@ do_install:append:stm32mp25-cargt-00395-01-00365 () {
     install -Dm 0644 ${WORKDIR}/config.conf.00395-01-00365 ${D}${sysconfdir}/rauc-hawkbit-updater/config.conf
 }
 
+# The installed config.conf differs per machine, so the package must be
+# MACHINE_ARCH. The overrides above don't trigger bitbake's automatic
+# machine-arch detection (that only looks for files in MACHINE-named
+# FILESPATH dirs), so without this both boards share one cortexa35
+# package and whichever was built last overwrites the other's config -
+# shipping the wrong controller id/auth token.
+PACKAGE_ARCH = "${MACHINE_ARCH}"
+
 # bundle_download_location (config.conf) points at userfs, not rootfs -
 # rootfs is a fixed-size ~2GB A/B slot with no headroom for a multi-hundred-
 # MB bundle download sitting alongside the live system. userfs isn't
