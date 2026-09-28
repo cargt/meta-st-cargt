@@ -153,15 +153,17 @@ subprocess.run(["/usr/lib/fwu/update_metadata.sh",
                  "refuse"], check=True)
 
 # Also arm U-Boot's own env-based bootcount safety net (upgrade_available/
-# bootcmd/altbootcmd/bootlimit) via the RAUC custom bootloader backend's
-# set-primary action. RAUC does NOT invoke bootloader-custom-backend
-# automatically as part of a normal install - its "Marking target slot ...
-# as bootable" log line is only RAUC's own internal slot-status bookkeeping,
-# not a call into system.conf's configured backend script. Without this,
-# the TF-A FWU metadata above correctly selects the new bank, but U-Boot's
-# own bootcmd is left unchanged (still pointing at the current slot), so it
-# just keeps booting the old slot forever - confirmed on hardware: two
-# separate installs (one hawkBit-driven, one manual `rauc install`) both
-# left the board on slot A after reboot despite "active boot is B" in this
-# script's own log, until st-boot-script.sh set-primary was run by hand.
+# bootcmd/altbootcmd/bootlimit) via the backend's set-primary action.
+#
+# RAUC 1.15 itself already calls set-primary for the new slot during
+# install (install.c: r_mark_active() -> custom backend "set-primary",
+# right after "Marking target slot ... as bootable", before this handler
+# runs), so this is normally a redundant, idempotent second write of the
+# same values. It was added after two installs left the board on the old
+# slot with upgrade_available=0; the likelier cause of that was the old
+# backend's get-state, which reset bootcmd/upgrade_available to the running
+# slot on ANY slot-status query (rauc status, D-Bus GetSlotStatus e.g. from
+# rauc-hawkbit-updater) between install and reboot - fixed by making
+# get-state read-only. Kept as a belt-and-braces guarantee that the trial
+# is armed when this handler returns.
 subprocess.run(["/usr/lib/rauc/st-boot-script.sh", "set-primary", next_boot_slot], check=True)
