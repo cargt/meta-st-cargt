@@ -997,6 +997,31 @@ every time), no manual intervention required once the bootloader
 activation fix (see this repo's commit history) and the config's `[device]` section were both in
 place.
 
+### 5.5 Extended stress testing
+
+`docs/hawkbit/weekend-stress-test.sh` runs the same cycle continuously and
+unattended for as long as you let it: rebuild, bundle, push via hawkBit,
+wait for auto-install+reboot, verify the slot/boot-status, repeat - for
+both DUTs, alternating, indefinitely. Fill in `BUILD_DIR`/`OE_INIT`/
+`DUT_IP`/`DUT_TOKEN` at the top for your setup and run it in a `tmux`
+session (or similar) so it survives your terminal closing; stop it any
+time with `touch <same directory>/STOP`.
+
+It self-disables a DUT after 3 consecutive failures (rather than hammering
+a possibly-stuck board indefinitely) and automatically resets the whole
+hawkBit stack once its artifact store passes 5GB - hawkBit's Management
+REST API only soft-deletes old software modules/artifacts (the DB row is
+hidden, but the uploaded bundle file is never actually freed from disk),
+so a long-running test needs this or the artifact store grows without
+bound until performance degrades and installs start timing out. The reset
+re-registers both targets with the same fixed tokens already in each
+board's `config.conf`, so the DUTs never need reconfiguring.
+
+**Verified on hardware, both DUTs**: 97 consecutive PASS cycles with zero
+failures over roughly 16 hours once the fixes above were in place (host
+key handling, `files-local/` config override, and the artifact-store
+reset), with 6 automatic resets happening transparently mid-run.
+
 ## Testing status
 
 - **eMMC install/reboot/verify, both directions (A→B and B→A):** PASS.

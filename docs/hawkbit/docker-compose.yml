@@ -13,7 +13,17 @@ services:
     ports:
       - "8083:8080"
     volumes:
-      - hawkbit-data:/data
+      # Uploaded bundle artifacts live at /app/artifactrepo, not /data as
+      # might be guessed - confirmed by inspecting the running container
+      # (`docker exec hawkbit find / -iname artifactrepo`). The Management
+      # REST API's DELETE endpoints are soft-delete only (hide the DB row,
+      # never free the underlying file) - if you're cycling many bundle
+      # uploads through this server (e.g. a long stress test), plan to
+      # periodically reclaim space with `docker compose down -v && up -d`
+      # rather than relying on the API to do it. The in-memory H2 database
+      # (targets, distribution sets, tokens) doesn't persist across a
+      # restart either way - only the artifact files under this volume do.
+      - hawkbit-data:/app/artifactrepo
 
   hawkbit-ui:
     image: hawkbit/hawkbit-ui:latest

@@ -1,3 +1,4 @@
 .vscode-tags
 .claude/
 __pycache__/
+recipes-support/rauc-hawkbit-updater/files-local/

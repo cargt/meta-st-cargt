@@ -1,4 +1,8 @@
-FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
+# files-local/ (gitignored) takes priority over files/ if present: real
+# hawkbit_server/auth_token values for this dev machine's own test server,
+# kept out of git so the committed files/ configs stay generic/replicable
+# placeholders for anyone else cloning this layer (see docs/rauc-ota-updates.md §5).
+FILESEXTRAPATHS:prepend := "${THISDIR}/files-local:${THISDIR}/files:"
 
 # rauc-hawkbit-updater polls a hawkBit server, downloads the assigned bundle
 # and hands it to RAUC over D-Bus - the "pull" counterpart to this project's
