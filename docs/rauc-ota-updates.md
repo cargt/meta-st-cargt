@@ -938,6 +938,13 @@ The response's `securityToken` field is the `auth_token` value for that
 board's `config.conf.*`. `controllerId` must exactly match `target_name`
 in the config — this project uses the board's `MACHINE` name.
 
+You can also supply your own `securityToken` in the request body instead
+of letting the server generate one (add `"securityToken": "<32 hex
+chars>"` to the object above) — useful if you ever need to recreate a
+target and want it to match a value already baked into a board's
+`config.conf`, without touching the board again. §5.5's automated stress
+test relies on exactly this to re-register targets after a reset.
+
 By default hawkBit's DDI API doesn't accept per-target tokens at all
 (`authentication.targettoken.enabled` defaults to `false`) — enable it once,
 server-wide:
@@ -1017,10 +1024,11 @@ bound until performance degrades and installs start timing out. The reset
 re-registers both targets with the same fixed tokens already in each
 board's `config.conf`, so the DUTs never need reconfiguring.
 
-**Verified on hardware, both DUTs**: 97 consecutive PASS cycles with zero
-failures over roughly 16 hours once the fixes above were in place (host
+**Verified on hardware, both DUTs**: 110+ consecutive PASS cycles with zero
+failures over roughly 18 hours once the fixes above were in place (host
 key handling, `files-local/` config override, and the artifact-store
-reset), with 6 automatic resets happening transparently mid-run.
+reset), with 7 automatic resets happening transparently mid-run, and
+counting - this run is still going as of this writing.
 
 ## Testing status
 
