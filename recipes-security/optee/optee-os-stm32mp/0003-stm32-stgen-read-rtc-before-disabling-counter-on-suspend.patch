@@ -1,0 +1,72 @@
+From d075178926c300731795adb4034121fb5173063a Mon Sep 17 00:00:00 2001
+From: Graham Taylor-Jones <graham.taylor-jones@cargt.com>
+Date: Wed, 30 Sep 2026 10:50:31 -0500
+Subject: [PATCH] stm32-stgen: read RTC before disabling counter on suspend
+
+Root cause of the poweroff/IWDG-reset bug (customer report:
+"poweroff behaves like reboot"), found via checkpoint tracing
+through the whole TF-A -> OP-TEE system-off path
+(0003/0004 diagnostic patches): every registered PM_OP_SUSPEND
+driver callback traced cleanly except stm32-stgen, whose suspend
+handler never returns.
+
+stm32_stgen_pm_suspend() disabled the STGEN counter - which
+directly feeds the ARM generic timer (CNTPCT) - before calling
+stm32_rtc_get_calendar(). That function polls an RTC
+"registers synchronized" hardware flag with a safety-net
+timeout measured using that same generic timer
+(timeout_init_us()/timeout_elapsed()). With STGEN already
+disabled, that timeout's clock is frozen: if the RTC sync flag
+isn't already set at the instant of the call, the poll spins
+forever instead of timing out and panicking cleanly - silently,
+with no further trace or log output, until the independent
+hardware watchdog (a separate clock domain) eventually fires and
+resets the board. This also explains the bug's intermittent
+nature: it only manifests when the RTC sync flag isn't already
+set at that exact moment.
+
+Read the RTC calendar first, while the timer is still running,
+so its own timeout can still function (and panic with a clear
+message, as designed, if the RTC genuinely doesn't respond)
+before disabling the counter that timeout depends on.
+
+Signed-off-by: Graham Taylor-Jones <graham.taylor-jones@cargt.com>
+---
+ core/drivers/counter/stm32_stgen.c | 21 +++++++++++++++------
+ 1 file changed, 15 insertions(+), 6 deletions(-)
+
+diff --git a/core/drivers/counter/stm32_stgen.c b/core/drivers/counter/stm32_stgen.c
+index 938944d6b..63a8b07e9 100644
+--- a/core/drivers/counter/stm32_stgen.c
++++ b/core/drivers/counter/stm32_stgen.c
+@@ -89,15 +89,24 @@
+ 	uint64_t counter_val = 0;
+ 
+ 	/*
++	 * Save current time from the RTC before disabling the STGEN
++	 * counter below: stm32_rtc_get_calendar() polls a hardware
++	 * "registers synchronized" flag with a timeout measured using the
++	 * ARM generic timer, which STGEN feeds. Disabling STGEN first
++	 * freezes that timeout's clock, so if the RTC sync flag isn't
++	 * already set, the poll's safety-net timeout can never elapse and
++	 * it spins forever instead of timing out - eventually caught only
++	 * by the independent hardware watchdog resetting the board.
++	 */
++	if (stm32_rtc_get_calendar(stgen_d.calendar))
++		panic("Could not get RTC calendar at suspend");
++
++	/*
+ 	 * Disable STGEN counter. At this point, it should be stopped by
+ 	 * software.
+ 	 */
+ 	io_clrbits32(stgen_d.base + STGENC_CNTCR, BIT(0));
+ 
+-	/* Save current time from the RTC */
+-	if (stm32_rtc_get_calendar(stgen_d.calendar))
+-		panic("Could not get RTC calendar at suspend");
+-
+ 	/* Save current counter value */
+ 	counter_val = stm32_stgen_get_counter_value();
+ 	stgen_d.cnt_h = (uint32_t)(counter_val >> 32);
+--
+2.43.0
