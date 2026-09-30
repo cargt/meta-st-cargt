@@ -14,6 +14,20 @@ boot (see st-boot-script.sh set-state / rauc-mark-good.service).
 
 RAUC runs this AFTER st-boot-script.sh set-primary has already pointed
 U-Boot's bootcmd at the new slot.
+
+Also stops the weston graphical session before returning. rauc-hawkbit-
+updater's post_update_reboot calls the raw reboot(2) syscall directly
+(it holds CAP_SYS_BOOT for exactly this) rather than going through
+systemd, so weston is normally still alive and submitting GPU commands
+when the kernel's device_shutdown() tears down the GPU driver during
+kernel_restart() - confirmed via dmesg to oops the out-of-tree galcore
+driver's .shutdown() hook, then oops weston itself a moment later with a
+NULL pointer dereference in gckCOMMAND_Commit, leaving kernel_restart()
+never actually completing. Stopping weston here, before this script
+returns and control passes back to whatever triggered the reboot, avoids
+the race entirely regardless of which caller (rauc-hawkbit-updater's
+direct reboot(2), or a manual `reboot`/`systemctl reboot` after a scp'd
+install) ends up invoking it.
 """
 
 import ctypes
@@ -167,3 +181,13 @@ subprocess.run(["/usr/lib/fwu/update_metadata.sh",
 # get-state read-only. Kept as a belt-and-braces guarantee that the trial
 # is armed when this handler returns.
 subprocess.run(["/usr/lib/rauc/st-boot-script.sh", "set-primary", next_boot_slot], check=True)
+
+# Stop weston now, synchronously, so it's already gone by the time
+# whatever triggered this install (rauc-hawkbit-updater's post_update_reboot,
+# or a manual `reboot` after a scp'd install) actually reboots the board -
+# see the module docstring. Not check=True: images without a weston
+# graphical session (or where it's already stopped) shouldn't fail the
+# install over this - `systemctl stop` on a unit that isn't loaded just
+# exits non-zero, it's not a sign anything is actually wrong.
+result = subprocess.run(["systemctl", "stop", "weston-graphical-session.service"])
+print("stop weston-graphical-session.service: exit %d" % result.returncode)
