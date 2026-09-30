@@ -1,0 +1,42 @@
+From cd72cd06b162d818524796b16e2bbfa70b4b4df0 Mon Sep 17 00:00:00 2001
+From: Graham Taylor-Jones <graham.taylor-jones@cargt.com>
+Date: Wed, 30 Sep 2026 11:27:39 -0500
+Subject: [PATCH] stm32-rtc: align shadow-register timeout with other
+ RTC syncs
+
+0005-stm32-stgen-read-rtc-before-disabling-counter-on-suspend.patch
+fixed the silent infinite hang during poweroff by reading the RTC
+calendar before disabling the counter its own timeout depends on
+- but on hardware this surfaced a second, real issue: the wait
+for the RTC ICSR_RSF ("registers synchronized") flag now
+correctly times out instead of hanging, and does so, panicking
+at stm32_rtc_read_calendar().
+
+stm32_rtc_read_calendar() budgets only TIMEOUT_US_RTC_SHADOW
+(10ms) for this wait - the only call site of that constant in
+the driver. stm32_rtc_wait_sync(), elsewhere in this same file,
+waits on the identical RTC_ICSR_RSF condition and budgets
+TIMEOUT_US_RTC_GENERIC (100ms) instead. Align the two: use the
+same, already-proven 100ms budget for both RSF waits rather than
+an inconsistent, unusually tight one for this path only.
+
+Signed-off-by: Graham Taylor-Jones <graham.taylor-jones@cargt.com>
+---
+ core/drivers/stm32_rtc.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/core/drivers/stm32_rtc.c b/core/drivers/stm32_rtc.c
+index a900b979a..5522eec2b 100644
+--- a/core/drivers/stm32_rtc.c
++++ b/core/drivers/stm32_rtc.c
+@@ -264,7 +264,7 @@
+ 		/* Wait calendar registers are ready */
+ 		io_clrbits32(rtc_base + RTC_ICSR, RTC_ICSR_RSF);
+ 
+-		to = timeout_init_us(TIMEOUT_US_RTC_SHADOW);
++		to = timeout_init_us(TIMEOUT_US_RTC_GENERIC);
+ 		while (!(io_read32(rtc_base + RTC_ICSR) & RTC_ICSR_RSF))
+ 			if (timeout_elapsed(to))
+ 				break;
+--
+2.43.0
