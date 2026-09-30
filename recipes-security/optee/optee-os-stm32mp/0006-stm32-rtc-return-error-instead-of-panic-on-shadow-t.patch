@@ -1,0 +1,84 @@
+From 4d12bb184f4a6b59082d422d48e3bb4e99dd4d28 Mon Sep 17 00:00:00 2001
+From: Graham Taylor-Jones <graham.taylor-jones@cargt.com>
+Date: Wed, 30 Sep 2026 13:02:47 -0500
+Subject: [PATCH] stm32-rtc: return error instead of panic on shadow
+ timeout
+
+Even with the timeout budget aligned to the more generous
+TIMEOUT_US_RTC_GENERIC (previous commit), the RTC ICSR_RSF wait
+inside stm32_rtc_read_calendar() still fails deterministically
+during poweroff, from inside stm32-stgen's suspend callback -
+confirmed on hardware, same panic, same line, every time, not a
+marginal timing issue. Whatever the deeper cause (still under
+investigation), calling panic() here is disproportionate: it's a
+generic RTC calendar read used by several callers, not something
+that should crash the whole secure OS on every failure.
+
+Return TEE_ERROR_BUSY instead and let callers decide how to
+handle it, matching stm32_rtc_wait_sync()'s existing pattern for
+the identical wait condition elsewhere in this file.
+
+Signed-off-by: Graham Taylor-Jones <graham.taylor-jones@cargt.com>
+---
+ core/drivers/stm32_rtc.c | 18 +++++++++---------
+ 1 file changed, 9 insertions(+), 9 deletions(-)
+
+diff --git a/core/drivers/stm32_rtc.c b/core/drivers/stm32_rtc.c
+index 5522eec2b..dab803618 100644
+--- a/core/drivers/stm32_rtc.c
++++ b/core/drivers/stm32_rtc.c
+@@ -253,7 +253,7 @@
+ }
+ 
+ /* Get calendar data from RTC devicecalendar valueregister values */
+-static void stm32_rtc_read_calendar(struct stm32_rtc_calendar *calendar)
++static TEE_Result stm32_rtc_read_calendar(struct stm32_rtc_calendar *calendar)
+ {
+ 	vaddr_t rtc_base = get_base();
+ 	bool bypshad = stm32_rtc_get_bypshad();
+@@ -270,12 +270,14 @@
+ 				break;
+ 
+ 		if (!(io_read32(rtc_base + RTC_ICSR) & RTC_ICSR_RSF))
+-			panic();
++			return TEE_ERROR_BUSY;
+ 	}
+ 
+ 	calendar->ssr = io_read32(rtc_base + RTC_SSR);
+ 	calendar->tr = io_read32(rtc_base + RTC_TR);
+ 	calendar->dr = io_read32(rtc_base + RTC_DR);
++
++	return TEE_SUCCESS;
+ }
+ 
+ /* Fill the RTC timestamp structure from a given RTC time-in-day value */
+@@ -333,21 +335,21 @@
+ 	if (res)
+ 		return res;
+ 
+-	stm32_rtc_read_calendar(calendar);
++	res = stm32_rtc_read_calendar(calendar);
+ 
+ 	/* RTC may need to be read twice, depending of clocks configuration */
+-	if (rtc_dev.flags & RTC_FLAGS_READ_TWICE) {
++	if (!res && (rtc_dev.flags & RTC_FLAGS_READ_TWICE)) {
+ 		uint32_t tr_save = calendar->tr;
+ 
+-		stm32_rtc_read_calendar(calendar);
++		res = stm32_rtc_read_calendar(calendar);
+ 
+-		if (calendar->tr != tr_save)
+-			stm32_rtc_read_calendar(calendar);
++		if (!res && calendar->tr != tr_save)
++			res = stm32_rtc_read_calendar(calendar);
+ 	}
+ 
+ 	clk_disable(rtc_dev.pclk);
+ 
+-	return TEE_SUCCESS;
++	return res;
+ }
+ 
+ /*
+--
+2.43.0
