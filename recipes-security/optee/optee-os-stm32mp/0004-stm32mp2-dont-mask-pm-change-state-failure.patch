@@ -1,0 +1,63 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Graham Taylor-Jones <graham.taylor-jones@cargt.com>
+Date: Wed, 30 Sep 2026 17:50:00 -0500
+Subject: [PATCH] stm32mp2: don't mask PM suspend failure in system-off
+ handler
+
+thread_system_off_handler()'s own doc comment says it should return
+"0 if OK, other value else" so TF-A can panic on a genuine failure,
+but the previous commit's code unconditionally reused a single `res`
+variable for both pm_change_state()'s result and
+stm32_stpmic2_switch_off()'s result - so a successful SWOFF call
+silently overwrote and discarded an earlier pm_change_state()
+failure. Uses separate res/pm_res variables and returns
+pm_res ? pm_res : res so a real PM failure is never swallowed.
+
+Reviewer note: found via a colleague's code review, not by hardware
+testing - this is a genuine correctness fix independent of the RTC
+root cause, but on its own wouldn't have surfaced the reported bug
+(the actual hang happened inside pm_change_state() itself, before
+this return path mattered).
+
+Signed-off-by: Graham Taylor-Jones <graham.taylor-jones@cargt.com>
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+---
+ core/arch/arm/plat-stm32mp2/stm32mp_pm.c | 15 ++++++++++++---
+ 1 file changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/core/arch/arm/plat-stm32mp2/stm32mp_pm.c b/core/arch/arm/plat-stm32mp2/stm32mp_pm.c
+index d312b32..088ebb3 100644
+--- a/core/arch/arm/plat-stm32mp2/stm32mp_pm.c
++++ b/core/arch/arm/plat-stm32mp2/stm32mp_pm.c
+@@ -30,10 +30,11 @@ unsigned long thread_system_off_handler(unsigned long a0 __unused,
+ 		((PM_MAX_LEVEL << PM_HINT_PLATFORM_STATE_SHIFT) &
+ 		  PM_HINT_PLATFORM_STATE_MASK);
+ 	TEE_Result res = TEE_ERROR_GENERIC;
++	TEE_Result pm_res = TEE_ERROR_GENERIC;
+
+-	res = pm_change_state(PM_OP_SUSPEND, pm_hint);
+-	if (res)
+-		EMSG("pm_change_state(SUSPEND) failed: %#"PRIx32, res);
++	pm_res = pm_change_state(PM_OP_SUSPEND, pm_hint);
++	if (pm_res)
++		EMSG("pm_change_state(SUSPEND) failed: %#"PRIx32, pm_res);
+
+ 	/*
+ 	 * Physically cut power via STPMIC2 MAIN_CR.SWOFF. I2C7 (the PMIC
+@@ -45,7 +46,13 @@ unsigned long thread_system_off_handler(unsigned long a0 __unused,
+ 	if (res)
+ 		EMSG("STPMIC2 switch off failed: %#"PRIx32, res);
+
+-	return res;
++	/*
++	 * Don't let a successful SWOFF call mask an earlier
++	 * pm_change_state() failure: this function's own doc comment
++	 * says a non-zero return makes TF-A panic, which is the correct
++	 * behavior for a genuine PM failure.
++	 */
++	return pm_res ? pm_res : res;
+ }
+
+ static uint32_t get_pm_hint(unsigned long a0)
+--
+2.43.0
