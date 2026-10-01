@@ -1,0 +1,30 @@
+From f45655d092726e440a07be7c9a041a56b18e0d39 Mon Sep 17 00:00:00 2001
+From: Christophe Guibout <christophe.guibout@st.com>
+Date: Mon, 15 Oct 2021 09:52:41 +0200
+Subject: [PATCH] support bin extension
+
+Avoid the following error:
+ Unsupported image /run/rauc/bundle/fip-stm32mp135f-dk-optee.bin
+ for slot type raw
+
+Change-Id: I464b7207671784ad08732960d9badd02e2ad00cf
+
+Forward-ported to RAUC 1.15.2 by Cargt: the old updatepairs[] table is
+gone; the file-extension -> image-type mapping now lives in
+ext_type_map[], and manifest parsing (both bundle creation and install)
+fails outright on an unmapped extension when no 'type=' is set.
+---
+ src/update_handler.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/update_handler.c b/src/update_handler.c
+--- a/src/update_handler.c
++++ b/src/update_handler.c
+@@ -2731,6 +2731,7 @@
+ 	{"*.ext4", "ext4"},
+ 	{"*.vfat", "vfat"},
+ 	{"*.img", "raw"},
++	{"*.bin", "raw"},
+ 	{"*.squashfs-*", "squashfs"},
+ 	{"*.squashfs", "squashfs"},
+ 	{"*.ubifs", "ubifs"},

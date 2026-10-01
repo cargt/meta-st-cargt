@@ -1,0 +1,78 @@
+From: CARGT <engineering@cargt.com>
+Subject: [PATCH] stm32mp25: enable env-based bootcount for A/B rollback safety
+
+Closes the RAUC A/B rollback-safety gap documented in
+docs/rauc-ota-updates.md section 2.5: previously, a bank committed via
+set-primary that never reached a good boot would never automatically
+fall back to the previous good bank - there was no countdown or retry
+logic, only a one-way, persistent bootcmd rewrite.
+
+CONFIG_FWU_MULTI_BANK_UPDATE was already enabled in this defconfig, and
+U-Boot's generic autoboot logic (common/autoboot.c bootdelay_process())
+consults it ahead of the plain bootcount mechanism whenever enabled -
+but stm32mp2 has no fwu_plat_get_bootidx() implementation (unlike
+stm32mp1, which reads a TAMP backup register also written by TF-A), so
+it falls through to a weak default that reads the FWU metadata's
+active_index directly and uses it as a boolean "run altbootcmd instead
+of bootcmd" flag. Confirmed empirically on hardware (distinct marker
+commands in bootcmd/altbootcmd, a full reset with autoboot left
+uninterrupted): this weak default reliably resolves to "always run
+bootcmd" regardless of active_index in our environment - i.e. it
+currently provides no real A/B awareness at all, and disabling it costs
+no working behavior.
+
+Disables CONFIG_FWU_MULTI_BANK_UPDATE (CONFIG_FWU_MDATA_V2, the
+metadata *format* our own update_metadata.sh/mkfwumdata tooling
+depends on, is untouched - this only concerns the autoboot decision
+path) so bootdelay_process() falls through to the standard
+bootcount_error() check instead, and enables the generic, portable
+env-based bootcount backend:
+- CONFIG_BOOTCOUNT_LIMIT + CONFIG_BOOTCOUNT_ENV: no hardware register
+  needed, bootcount/bootlimit tracked entirely in the persisted
+  environment (drivers/bootcount/bootcount_env.c).
+- CONFIG_BOOTCOUNT_BOOTLIMIT=3: three real attempts at bootcmd before
+  U-Boot's own generic autoboot logic automatically runs altbootcmd
+  instead - matching the same 4-attempt convention TF-A's own
+  (independent, firmware-level) FWU_MAX_TRIAL_REBOOT counter already
+  uses.
+- upgrade_available/bootcount default to 0 in the built-in environment:
+  per drivers/bootcount/bootcount_env.c, bootcount only accumulates (and
+  is only ever compared against bootlimit) while upgrade_available=1,
+  so this is a safe no-op until something (st-boot-script.sh's
+  set-primary, in a later commit) explicitly arms it for a new trial.
+
+Upstream-Status: Pending [not sent upstream to ST - specific to this
+board's RAUC A/B rollback design]
+
+--- a/configs/stm32mp25_defconfig
++++ b/configs/stm32mp25_defconfig
+@@ -26,6 +26,9 @@
+ CONFIG_DISTRO_DEFAULTS=y
+ CONFIG_BOOTDELAY=1
+ CONFIG_BOOTCOMMAND="echo 'Boot A';setenv altboot 0;run bootcmd_stm32mp"
++CONFIG_BOOTCOUNT_LIMIT=y
++CONFIG_BOOTCOUNT_ENV=y
++CONFIG_BOOTCOUNT_BOOTLIMIT=3
+ CONFIG_FDT_SIMPLEFB=y
+ CONFIG_SYS_PROMPT="STM32MP> "
+ CONFIG_CMD_BDINFO_EXTRA=y
+@@ -191,7 +194,7 @@
+ # CONFIG_LMB_USE_MAX_REGIONS is not set
+ CONFIG_LMB_MEMORY_REGIONS=2
+ CONFIG_LMB_RESERVED_REGIONS=32
+-CONFIG_FWU_MULTI_BANK_UPDATE=y
++# CONFIG_FWU_MULTI_BANK_UPDATE is not set
+ CONFIG_FWU_MDATA_V2=y
+ # CONFIG_TOOLS_MKEFICAPSULE is not set
+ # CONFIG_TOOLS_MKFWUMDATA is not set
+--- a/include/configs/stm32mp25_common.h
++++ b/include/configs/stm32mp25_common.h
+@@ -93,6 +93,8 @@
+ #define STM32MP_EXTRA \
+ 	"env_check=if env info -p -d -q; then env save; fi\0" \
+ 	"altbootcmd=echo 'Boot B';setenv altboot 1;run bootcmd_stm32mp\0" \
++	"upgrade_available=0\0" \
++	"bootcount=0\0" \
+ 	"boot_net_usb_start=true\0"
+ /*
+  * memory layout for 96MB uncompressed/compressed kernel,

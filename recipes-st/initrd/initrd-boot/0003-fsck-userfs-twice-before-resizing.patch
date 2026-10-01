@@ -1,0 +1,49 @@
+From: CARGT <engineering@cargt.com>
+Subject: [PATCH] init-resize: run e2fsck twice on userfs before resizing
+
+A single e2fsck pass isn't sufficient before calling resize2fs on a
+never-before-checked filesystem. When e2fsck's first real pass on a
+fresh image actually fixes something (reported as "FILE SYSTEM WAS
+MODIFIED" - common on the very first check any freshly-built ext4
+image ever gets), resize2fs refuses to run against it
+("Please run 'e2fsck -f /dev/mmcblkNpM' first") even though e2fsck
+just ran successfully - it specifically wants to see a subsequent
+CLEAN pass before trusting the filesystem enough to grow it, and
+since the calling script never re-ran e2fsck, the resize was silently
+skipped every time this triggered.
+
+Confirmed on hardware: userfs on a freshly-imaged SD card stayed at
+its built 200M size instead of growing to fill the remaining ~27GB,
+because this exact sequence occurred on the very first boot.
+
+Run a second, fast e2fsck pass (no -c bad-blocks rescan needed, since
+the first pass already did that) immediately after the first, so
+resize2fs always sees a filesystem it considers clean enough to grow.
+
+Upstream-Status: Pending [not sent upstream to ST]
+
+--- a/init-resize.sh
++++ b/init-resize.sh
+@@ -41,7 +41,21 @@
+                                 case $label in
+                                 user*)
+                                     echo "RESIZE USERFS [$DEVICE]"
+-                                    /sbin/e2fsck -f -y -c -C 0 $DEVICE && /sbin/resize2fs $DEVICE
++                                    # A single e2fsck pass isn't enough on a
++                                    # never-before-checked filesystem: when it
++                                    # actually fixes something (common on a
++                                    # fresh image's very first real check,
++                                    # reported as "FILE SYSTEM WAS MODIFIED"),
++                                    # resize2fs refuses to run against it
++                                    # ("Please run 'e2fsck -f' first") even
++                                    # though e2fsck just ran - it wants a
++                                    # subsequent CLEAN pass before trusting
++                                    # the filesystem enough to resize it. Run
++                                    # a second, fast recheck (no -c bad-blocks
++                                    # rescan needed) to satisfy that.
++                                    /sbin/e2fsck -f -y -c -C 0 $DEVICE
++                                    /sbin/e2fsck -f -y -C 0 $DEVICE
++                                    /sbin/resize2fs $DEVICE
+                                     ;;
+                                 root*)
+                                     echo "RESIZE ROOTFS [$DEVICE]"

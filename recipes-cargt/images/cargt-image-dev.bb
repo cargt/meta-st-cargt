@@ -2,6 +2,7 @@ SUMMARY = "OpenSTLinux weston image with basic Wayland support (if enable in dis
 LICENSE = "Proprietary"
 
 include recipes-st/images/st-image.inc
+include recipes-cargt/images/cargt-rauc-ab-flashlayout.inc
 
 inherit core-image features_check
 
@@ -69,6 +70,8 @@ CORE_IMAGE_EXTRA_INSTALL += " \
     packagegroup-core-buildessential \
     ${@bb.utils.contains('MACHINE_FEATURES', '00378', 'cc33xx-firmware','', d)} \
     ${@bb.utils.contains('MACHINE_FEATURES', '00395', 'kernel-module-nxp-wlan nxp-wlan-firmware-nxp-common nxp-wlan-firmware-nxpiw610-sdio','', d)} \
+    ${@bb.utils.contains('COMBINED_FEATURES', 'rauc', 'rauc rauc-conf fwu-gen-metadata-v2 u-boot-tools-stm32mp cargt-device-symlinks','', d)} \
+    ${@bb.utils.contains('COMBINED_FEATURES', 'rauc', 'rauc-hawkbit-updater','', d)} \
     kernel-modules \
     kernel-devsrc \
     udev-extraconf \
@@ -79,3 +82,11 @@ CORE_IMAGE_EXTRA_INSTALL += " \
 #   database.
 
 IMAGE_ROOTFS_MAXSIZE =  "2097152"
+
+# RAUC OTA demo marker - lets us visibly confirm an installed bundle actually
+# took effect (not just that the boot slot flipped). Bump/remove once the
+# demo is done.
+cargt_write_ota_demo_marker () {
+    echo "RAUC OTA demo build: $(date -u +%Y-%m-%dT%H:%M:%SZ)" > ${IMAGE_ROOTFS}${sysconfdir}/ota-demo-version
+}
+ROOTFS_POSTPROCESS_COMMAND += "${@bb.utils.contains('COMBINED_FEATURES', 'rauc', 'cargt_write_ota_demo_marker; ', '', d)}"

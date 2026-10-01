@@ -1,0 +1,94 @@
+From: Cargt <tim.carney@cargt.com>
+Subject: [PATCH] serial: stm32: fix pm_runtime race between shutdown() and
+ RX DMA resume
+
+stm32_usart_shutdown() calls pm_runtime_get(), the non-blocking variant,
+at its very start, then proceeds - within the same function, a few lines
+later - to terminate the RX DMA channel via stm32_usart_rx_dma_terminate()
+and dmaengine_synchronize(), without ever waiting for that pm_runtime_get()
+to actually resolve.
+
+If the port happens to be runtime-suspended at the moment shutdown() is
+called (a normal condition under autosuspend), pm_runtime_get() only
+schedules the resume asynchronously on the "pm" workqueue and returns
+immediately. That deferred resume runs concurrently, on its own kworker:
+
+  pm_runtime_work() -> rpm_resume() -> genpd_runtime_resume()
+    -> pm_generic_runtime_resume() -> stm32_usart_runtime_resume()
+    -> stm32_usart_rx_dma_start_or_resume() -> vchan_tx_submit()
+
+- which prepares and submits a new cyclic RX DMA descriptor onto
+stm32_port->rx_ch, racing shutdown()'s own dmaengine_terminate_async() /
+dmaengine_synchronize() on that identical channel, on another thread, at
+the same time. stm32_port->rx_dma_busy, checked and set by both paths, is
+a plain bool with no lock serializing the two. The loser hits a use-after-
+list_del on the DMA vchan's descriptor list and oopses in vchan_tx_submit()
+on a LIST_POISON1/2 dereference - observed on real hardware wedging the
+whole system, not just the UART:
+
+  Unable to handle kernel paging request at virtual address dead000000000108
+  ...
+  pc : vchan_tx_submit+0x58/0xd0
+  Call trace:
+   vchan_tx_submit+0x58/0xd0
+   stm32_usart_rx_dma_start_or_resume+0xd8/0x234
+   stm32_usart_runtime_resume+0x78/0xe8
+   pm_generic_runtime_resume+0x2c/0x44
+   __genpd_runtime_resume+0x30/0x80
+   genpd_runtime_resume+0x114/0x29c
+   __rpm_callback+0x48/0x1d8
+   rpm_callback+0x6c/0x78
+   rpm_resume+0x490/0x6b4
+   pm_runtime_work+0x84/0xc8
+
+This is the same underlying pattern 0010 fixed in stm32_usart_break_ctl()
+- a non-blocking pm_runtime_get() paired with an operation a few lines
+later that assumes the resume has already completed - but a different
+call site, and neither 0010 nor 0012 touch it: 0010 only changes
+break_ctl(), and 0012 only stops btnxpuart's power-save timer/work from
+racing btnxpuart_close()'s call into serdev_device_close(). Even with
+both of those applied, this shutdown()-vs-its-own-deferred-resume race
+still fires any time the port is suspended when close() is called,
+regardless of what closed it or why it was suspended.
+
+This pm_runtime_get() call in shutdown() is already present in the ST
+BSP tree as shipped, not something added by a Cargt patch. Not checked
+against true upstream mainline.
+
+Use the blocking pm_runtime_resume_and_get() instead, matching the fix
+already applied in break_ctl() (0010), so any in-flight resume has
+actually completed - and can no longer touch stm32_port->rx_ch - before
+shutdown() tears that same channel down a few lines later. Applied
+ungated since it's a generic driver correctness fix, not board-specific.
+
+Signed-off-by: Cargt <tim.carney@cargt.com>
+---
+diff --git a/drivers/tty/serial/stm32-usart.c b/drivers/tty/serial/stm32-usart.c
+index 1111111111..2222222222 100644
+--- a/drivers/tty/serial/stm32-usart.c
++++ b/drivers/tty/serial/stm32-usart.c
+@@ -1422,7 +1422,23 @@ static void stm32_usart_shutdown(struct uart_port *port)
+ 	u32 val, isr;
+ 	int ret;
+
+-	pm_runtime_get(port->dev);
++	/*
++	 * pm_runtime_get() only requests an async resume and returns
++	 * immediately - it does not wait for the clock/power domain to
++	 * actually come back up. If this port is currently runtime-
++	 * suspended, that resume completes later on the "pm" workqueue
++	 * (pm_runtime_work() -> stm32_usart_runtime_resume() ->
++	 * stm32_usart_rx_dma_start_or_resume()), which submits a new RX
++	 * DMA descriptor on stm32_port->rx_ch - racing the RX DMA
++	 * terminate a few lines below with no lock between them, and
++	 * corrupting the DMA vchan's descriptor list (oops in
++	 * vchan_tx_submit() on a LIST_POISON dereference). Use the
++	 * blocking variant so any in-flight resume has completed before
++	 * we tear the RX DMA channel down.
++	 */
++	ret = pm_runtime_resume_and_get(port->dev);
++	if (ret < 0)
++		dev_err(port->dev, "Failed to resume port for shutdown: %d\n", ret);
+ 
+ 	if (stm32_usart_tx_dma_started(stm32_port))
+ 		stm32_usart_tx_dma_terminate(stm32_port);

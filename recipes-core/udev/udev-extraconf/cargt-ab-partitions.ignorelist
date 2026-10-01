@@ -1,0 +1,60 @@
+# Exclude this board's RAUC A/B partitions (metadata1/2, fip-a/b,
+# u-boot-env, bootfs-a/b, vendorfs-a/b, rootfs-a/b) from udev's generic
+# auto-mounter.
+#
+# mount-partitions.sh already mounts whichever of these is the *active*
+# slot (scoped to root's own device - see its get_type/found_devices
+# functions), and RAUC needs exclusive access to the *inactive* slot to
+# write an update into. The generic automounter doesn't know about any of
+# that: it mounts every filesystem-bearing partition it sees under
+# /run/media/<label>-<devnode>, active or not, which both duplicates
+# mount-partitions.sh's job for the active slot and holds the inactive
+# slot's device open - the direct cause of RAUC failing with "Device or
+# resource busy" when installing an update.
+#
+# eMMC (mmcblk1) and SD card (mmcblk0) do NOT share the same partition
+# numbering here, despite carrying the same partition names/content: the
+# SD card's GPT carries two extra fsbla1/fsbla2 (FSBL) partitions at the
+# front that eMMC doesn't need (eMMC stores its FSBL in dedicated
+# mmcblk1boot0/boot1 hardware partitions instead), shifting every
+# subsequent partition's number by 2. So on eMMC, partitions 1-11 are the
+# A/B set and userfs is p12; on the SD card, partitions 1-13 are the A/B
+# set (plus fsbla1/fsbla2) and userfs is p14. Confirmed live: an earlier
+# version of this file used a combined `mmcblk[01]pN` range of 1-11 for
+# both devices, which correctly covered eMMC but left the SD card's
+# rootfs-a/rootfs-b (actually p12/p13 there, outside that range) exposed
+# to the automounter - caught when they showed up auto-mounted under
+# /run/media/ during a real SD card boot test. Each device therefore gets
+# its own explicit range below rather than one shared pattern.
+#
+# userfs (the last partition on each device) is intentionally left
+# mountable here; it's not part of the A/B scheme and isn't otherwise
+# auto-mounted by anything else.
+#
+# expr match (used by mount.sh) matches a PREFIX of $DEVNAME against a BRE,
+# so each pattern is anchored with $ to avoid e.g. "p1" prefix-matching
+# "p10"/"p11".
+/dev/mmcblk1p1$
+/dev/mmcblk1p2$
+/dev/mmcblk1p3$
+/dev/mmcblk1p4$
+/dev/mmcblk1p5$
+/dev/mmcblk1p6$
+/dev/mmcblk1p7$
+/dev/mmcblk1p8$
+/dev/mmcblk1p9$
+/dev/mmcblk1p10$
+/dev/mmcblk1p11$
+/dev/mmcblk0p1$
+/dev/mmcblk0p2$
+/dev/mmcblk0p3$
+/dev/mmcblk0p4$
+/dev/mmcblk0p5$
+/dev/mmcblk0p6$
+/dev/mmcblk0p7$
+/dev/mmcblk0p8$
+/dev/mmcblk0p9$
+/dev/mmcblk0p10$
+/dev/mmcblk0p11$
+/dev/mmcblk0p12$
+/dev/mmcblk0p13$

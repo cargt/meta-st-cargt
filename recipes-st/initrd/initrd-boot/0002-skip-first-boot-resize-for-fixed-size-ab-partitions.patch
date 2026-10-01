@@ -1,0 +1,45 @@
+From: CARGT <engineering@cargt.com>
+Subject: [PATCH] init-resize: skip growing bootfs/vendorfs/rootfs, they're
+ fixed-size A/B slots now
+
+bootfs, vendorfs and rootfs are duplicated into -a/-b RAUC OTA slots,
+each built to (and flashed at) a fixed size with no "remaining space"
+to grow into - unlike userfs, which is intentionally built small and
+grown once to fill whatever's left on the eMMC.
+
+This script matches partitions by ext4 filesystem label with a plain
+prefix (root*/vendor*/boot*), and both the -a and -b slot of a given
+filesystem get built with the same label - so under the old single-
+bank naming this ran once per filesystem, but now runs (and does a
+full e2fsck -c bad-blocks scan) against *both* A and B slots, on the
+first boot of whichever slot happens to be newly installed. For RAUC,
+"newly installed" means every OTA update's first boot into the slot
+that was just updated - not just a one-time factory cost. Since these
+partitions never need growing, drop the fsck+resize2fs work for them
+entirely and just log that they were seen.
+
+Upstream-Status: Pending [not sent upstream to ST - specific to a
+custom A/B partition scheme]
+
+--- a/init-resize.sh
++++ b/init-resize.sh
+@@ -58,16 +58,13 @@
+                                     /sbin/resize2fs $DEVICE
+                                     ;;
+                                 root*)
+-                                    echo "RESIZE ROOTFS [$DEVICE]"
+-                                    /sbin/e2fsck -f -y -c -C 0 $DEVICE && /sbin/resize2fs $DEVICE
++                                    echo "SKIP ROOTFS [$DEVICE] (fixed-size A/B slot)"
+                                     ;;
+                                 vendor*)
+-                                    echo "RESIZE VENDORFS [$DEVICE]"
+-                                    /sbin/e2fsck -f -y -c -C 0 $DEVICE && /sbin/resize2fs $DEVICE
++                                    echo "SKIP VENDORFS [$DEVICE] (fixed-size A/B slot)"
+                                     ;;
+                                 boot*)
+-                                    echo "RESIZE BOOTFS [$DEVICE]"
+-                                    /sbin/e2fsck -f -y -c -C 0 $DEVICE && /sbin/resize2fs $DEVICE
++                                    echo "SKIP BOOTFS [$DEVICE] (fixed-size A/B slot)"
+                                     ;;
+                                 *)
+                                     ;;

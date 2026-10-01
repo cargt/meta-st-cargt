@@ -1,0 +1,188 @@
+From: Cargt <tim.carney@cargt.com>
+Subject: [PATCH] resize-helper: extend the userfs GPT partition before
+ growing it
+
+On the SD card build, userfs is created as a small fixed-size GPT
+partition (200M - see the sdcard .wks.in), with the rest of the card
+left genuinely unpartitioned. resize2fs and systemd-growfs both only
+ever grow a filesystem to fill its *existing* partition boundary -
+neither one ever touches the partition table itself - so without an
+explicit partition-table extension first, neither has anything to grow
+into and userfs stays stuck at 200M forever, no matter how many times
+this script (or init-resize.sh) runs or how successfully it reports.
+
+eMMC doesn't hit this: its flashlayout sizes userfs to consume the
+whole remaining capacity directly at flash time, so there's normally
+no free space left after it for this new code to find or need to act
+on - a safe no-op there.
+
+Confirmed on hardware: after writing a freshly-built SD card image to
+both DUTs and booting, userfs was stuck at 200M on both despite
+RESIZE-HELPER reporting "FINISH" and systemd-growfs completing without
+error - `df -h` showed the fixed 200M size, and sgdisk showed the
+userfs partition table entry itself unchanged, with ~22GB of genuinely
+unpartitioned space sitting after it on the disk.
+
+Fix: before calling systemd-growfs/resize2fs, extend the userfs GPT
+partition's table entry to consume the rest of the disk (delete and
+recreate it with the same start sector, type GUID, unique GUID and
+name - so nothing about how the partition is identified changes, only
+where it ends), then tell the running kernel about the new size via
+resizepart (falling back to partprobe). This is guarded so it only
+ever acts when userfs is genuinely the last partition on the disk and
+there's a meaningful amount of real free space after it - both to
+avoid colliding with another partition on some other unforeseen
+layout, and so it's a safe no-op on the already-correctly-sized eMMC
+case. Also handles the disk-image-dd'd-onto-a-larger-card gotcha: the
+GPT backup header (and the primary header's own recorded "last usable
+sector") still reflect the original, smaller built image size until
+`sgdisk -e` runs once - without that, the free space after the last
+partition isn't visible to sgdisk at all and the extend silently does
+nothing.
+
+The device this function is called with is resolved from the root
+filesystem's own disk (mmcblk0 vs mmcblk1), not from /usr/local's
+current mount state: this call site runs right after this same script
+may have already called mount-partitions.sh stop (userfs is in its
+MOUNT_PARTITIONS_LIST), which would make a findmnt-on-/usr/local
+lookup here return nothing despite the device still existing. Uses
+`lsblk -l` (not the tree-drawing default) so the device name isn't
+prefixed with a tree-branch character when listing a whole disk's
+partitions.
+
+This function's own logic was verified working correctly on hardware
+independent of the rest of this change (manually re-invoked twice,
+both times growing userfs from 200M to ~21GB correctly) before a
+separate, unrelated bug elsewhere was found and fixed: see
+0005-dont-mark-userfs-resized-from-the-initrd.patch in the
+initrd-boot recipe - init-resize.sh, which always runs before this
+script, was unconditionally marking userfs "done" after its own
+resize2fs call, regardless of whether that call actually grew
+anything (it can't, on SD card, without the extend logic added here) -
+which caused this script's entire resize block, including this
+function, to be skipped via the shared marker before it ever got a
+chance to run. Confirmed fixed together on hardware: userfs now grows
+from 200M to ~21GB automatically on a fresh SD card's first boot, no
+manual intervention.
+
+Upstream-Status: Pending [not sent upstream to ST - specific to this
+project's A/B partition scheme's SD card sizing]
+
+Signed-off-by: Cargt <tim.carney@cargt.com>
+---
+diff --git a/resize-helper b/resize-helper
+index 1111111111..2222222222 100644
+--- a/resize-helper
++++ b/resize-helper
+@@ -43,6 +43,78 @@ USERFS_RESIZE_MARKER=/usr/local/.resize-helper-done
+ USERFS_ALREADY_RESIZED=0
+ [ -f "$USERFS_RESIZE_MARKER" ] && USERFS_ALREADY_RESIZED=1
+
++# On the SD card build, userfs is created as a small fixed-size GPT
++# partition (200M, see the .wks.in) with the rest of the card left
++# genuinely unpartitioned - resize2fs/systemd-growfs only ever grow a
++# filesystem to fill its *existing* partition boundary, they never touch
++# the partition table itself, so without this neither one has anything
++# to grow into and userfs stays stuck at 200M forever. (eMMC doesn't hit
++# this: its flashlayout sizes userfs to consume the whole remaining
++# capacity directly at flash time, so there's normally no free space
++# after it for this to find or need to act on - a safe no-op there.)
++#
++# Confirmed on hardware: after writing today's SD card image and
++# booting, userfs was stuck at 200M despite both the initrd-stage and
++# this script's own resize attempts completing "successfully" - because
++# both were only ever resizing the filesystem within an unchanged 200M
++# partition. Extending the GPT partition first (guarded to only ever do
++# so when this is genuinely the last partition on the disk with real
++# free space after it, so it can't collide with a following partition
++# or fire pointlessly on a normal, already-correctly-sized eMMC) fixed
++# it: verified on both DUTs' SD cards, userfs grew from 200M to ~21GB.
++extend_partition_if_last_and_free_space() {
++    device="$1"
++    disk="/dev/$(lsblk -lno PKNAME "$device" 2>/dev/null)"
++    partnum=$(cat "/sys/class/block/$(basename "$device")/partition" 2>/dev/null)
++    [ -n "$disk" ] && [ -n "$partnum" ] || return 0
++    [ -f /usr/sbin/sgdisk ] || return 0
++
++    # Only proceed if $device is the last partition on $disk and there's
++    # real free space after it - otherwise this is either not our
++    # situation (already fills the disk, e.g. eMMC) or would be unsafe
++    # (extending anything but the true last partition risks colliding
++    # with whatever comes after it).
++    last_part_line=$(sgdisk -p "$disk" 2>/dev/null | awk '$1 ~ /^[0-9]+$/{line=$0} END{print line}')
++    last_partnum=$(echo "$last_part_line" | awk '{print $1}')
++    [ "$last_partnum" = "$partnum" ] || return 0
++
++    end_sector=$(echo "$last_part_line" | awk '{print $3}')
++    # sgdisk -e first: on an image dd'd onto a larger physical disk than
++    # it was built for, the backup GPT header (and the primary header's
++    # own recorded "last usable sector") still reflect the original,
++    # smaller image size until this runs once - without it, the free
++    # space after the last partition isn't visible to sgdisk at all, and
++    # the extend below silently does nothing.
++    sgdisk -e "$disk" >/dev/null 2>&1
++    last_usable=$(sgdisk -p "$disk" 2>/dev/null | sed -n 's/.*last usable sector is \([0-9]*\).*/\1/p')
++    [ -n "$last_usable" ] || return 0
++    # Require a real, meaningful amount of free space (>16MiB) before
++    # bothering - a few sectors of alignment slack isn't worth acting on.
++    free_sectors=$((last_usable - end_sector))
++    [ "$free_sectors" -gt 32768 ] || return 0
++
++    echo "Extending $device ($disk partition $partnum) to use $free_sectors free sectors" > /dev/kmsg
++    was_mounted=$(findmnt --noheadings --output=TARGET "$device" 2>/dev/null)
++    [ -n "$was_mounted" ] && umount "$device"
++
++    start_sector=$(sgdisk -i "$partnum" "$disk" 2>/dev/null | sed -n 's/^First sector: \([0-9]*\).*/\1/p')
++    type_guid=$(sgdisk -i "$partnum" "$disk" 2>/dev/null | sed -n 's/^Partition GUID code: \([0-9A-Fa-f-]*\).*/\1/p')
++    unique_guid=$(sgdisk -i "$partnum" "$disk" 2>/dev/null | sed -n "s/^Partition unique GUID: \([0-9A-Fa-f-]*\).*/\1/p")
++    part_name=$(sgdisk -i "$partnum" "$disk" 2>/dev/null | sed -n "s/^Partition name: '\(.*\)'$/\1/p")
++
++    if [ -n "$start_sector" ] && [ -n "$type_guid" ] && [ -n "$unique_guid" ]; then
++        sgdisk -d "$partnum" \
++               -n "${partnum}:${start_sector}:0" \
++               -t "${partnum}:${type_guid}" \
++               -c "${partnum}:${part_name}" \
++               -u "${partnum}:${unique_guid}" \
++               "$disk"
++        resizepart "$disk" "$partnum" $((last_usable - start_sector + 1)) 2>/dev/null || partprobe "$disk" 2>/dev/null
++    fi
++
++    [ -n "$was_mounted" ] && mount "$device" "$was_mounted"
++}
++
+ echo "RESIZE-HELPER START" > /dev/kmsg
+
+ # disable service to be sure it will be executed only one time
+@@ -65,6 +137,24 @@ if [ -f /lib/systemd/systemd-growfs ]; then
+         [ -f /sbin/mount-partitions.sh ] && /sbin/mount-partitions.sh stop
+     fi
+     if [ "$USERFS_ALREADY_RESIZED" = "0" ]; then
++        # Resolve via the root filesystem's own disk, not via /usr/local's
++        # current mount state - mount-partitions.sh stop, just above, may
++        # have already unmounted /usr/local by this point (it's in
++        # MOUNT_PARTITIONS_LIST), which would make a findmnt-on-/usr/local
++        # lookup here return nothing despite the device still existing.
++        root_device=$(findmnt --noheadings --output=SOURCE / 2>/dev/null | cut -d'[' -f1)
++        mmc_disk=""
++        case "$root_device" in
++            /dev/mmcblk0*) mmc_disk=/dev/mmcblk0 ;;
++            /dev/mmcblk1*) mmc_disk=/dev/mmcblk1 ;;
++            /dev/mmcblk2*) mmc_disk=/dev/mmcblk2 ;;
++        esac
++        userfs_device=""
++        if [ -n "$mmc_disk" ]; then
++            userfs_part=$(lsblk -lno NAME,PARTLABEL "$mmc_disk" 2>/dev/null | awk '$2=="userfs"{print $1}')
++            [ -n "$userfs_part" ] && userfs_device="/dev/${userfs_part}"
++        fi
++        [ -n "$userfs_device" ] && extend_partition_if_last_and_free_space "$userfs_device"
+         /lib/systemd/systemd-growfs /usr/local/
+         touch "$USERFS_RESIZE_MARKER"
+     fi
+@@ -79,6 +169,7 @@ else
+                 PART_LABEL=$(udevadm info --query=property --name=/dev/${device} | grep '^ID_PART_ENTRY_NAME=' | cut -d'=' -f2)
+                 if [ "$PART_LABEL" = "userfs" ] && [ "$USERFS_ALREADY_RESIZED" = "0" ]; then
+                     echo "Resize /dev/${device}"
++                    extend_partition_if_last_and_free_space "/dev/${device}"
+                     e2fsck -f -y -c -C 0 "/dev/${device}"
+                     ${RESIZE2FS} "/dev/${device}"
+                     mkdir -p /tmp/userfs-mark
