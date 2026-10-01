@@ -1162,26 +1162,63 @@ board's `config.conf`, so the DUTs never need reconfiguring.
 **Verified on hardware, both DUTs**: 110+ consecutive PASS cycles with zero
 failures over roughly 18 hours once the fixes above were in place (host
 key handling, `files-local/` config override, and the artifact-store
-reset), with 7 automatic resets happening transparently mid-run, and
-counting - this run is still going as of this writing.
-(Also run on the pre-rework backend — §2.5. It's the natural soak test to
-repeat on the reworked one; the script's `rauc status` checks are
-read-only either way.)
+reset), with 7 automatic resets happening transparently mid-run.
+(Also run on the pre-rework backend — §2.5.)
+
+**Rollback-safety testing added and verified on hardware, both DUTs**: the
+script now also runs a rollback-safety test every 4th cycle per DUT -
+deliberately corrupts the currently-inactive slot's init, forces a boot
+into it via RAUC's own bootloader backend, and confirms the platform's
+bootcount/watchdog logic automatically falls back to the previous good
+slot with no RAUC/userspace involvement. A second overnight run (~15
+hours, 109+ consecutive PASS, 0 failures) with this enabled caught two
+real bugs the original soak test never exercised, since it never
+deliberately broke a boot:
+
+- A reboot-time kernel crash: `rauc-hawkbit-updater`'s `post_update_reboot`
+  calls the raw `reboot(2)` syscall directly (it holds
+  `AmbientCapabilities=CAP_SYS_BOOT` for exactly this), bypassing systemd's
+  graceful shutdown - so `weston` was still alive and submitting GPU
+  commands the instant `device_shutdown()` tore down the out-of-tree
+  Vivante `galcore` driver, oopsing it and then `weston` itself a moment
+  later. `kernel_restart()` never completed; the board sat in a
+  half-torn-down state until forced back with a raw `sysrq` reboot. Fixed
+  by stopping `weston-graphical-session.service` synchronously in
+  `post-install.sh`, before control returns to whatever triggers the
+  reboot afterward (see that file's module docstring).
+- `meta-cargt-stm32mp-addons` mainline (`scarthgap`) was missing
+  `MACHINE_FEATURES += "rauc"`, so the entire custom RAUC backend
+  (`st-boot-script.sh`, the mark-good service, the `/run/cargt-part/`
+  device symlinks) silently never got installed - `rauc` itself still
+  "worked" via its own generic fallback config (raw bundle copying doesn't
+  need the custom backend), masking the gap until `rauc status`/mark-good
+  were actually exercised. Fixed by merging the already-prepared
+  `feature/rauc-support` branch (which had this and the full A/B partition
+  layout) forward onto current `scarthgap`.
+
+Once both fixes were applied and both DUTs freshly reflashed, the rerun
+passed 12+ rollback-safety tests per DUT with zero failures, validating
+the backend-rework + per-machine A/B gating item below on real hardware
+for the first time.
 
 ## Testing status
 
 - **Backend rework (`set-state`, read-only `get-state`/`get-primary`,
   `rauc_bad`, single-transaction env writes) and per-machine A/B gating
-  (`MACHINE_FEATURES += "rauc"` / `COMBINED_FEATURES`): NOT YET TESTED
-  ON HARDWARE.** Verified so far: the backend's state transitions in a
+  (`MACHINE_FEATURES += "rauc"` / `COMBINED_FEATURES`): VERIFIED ON
+  HARDWARE, both DUTs** — see §5.5's rollback-safety testing writeup.
+  12+ A→B→A round trips and 12+ rollback-sabotage tests per DUT, all
+  PASS, `rauc status` confirmed not to disturb `upgrade_available`/
+  `bootcount` across repeated queries. Getting a clean hardware run
+  required fixing two bugs the gating itself had been masking (missing
+  `MACHINE_FEATURES += "rauc"` on `meta-cargt-stm32mp-addons` mainline,
+  and an unrelated reboot-time kernel crash) - see §5.5 for both.
+  Earlier verification before this: the backend's state transitions in a
   host-side simulation (fake `fw_printenv`/`fw_setenv`: install, manual
   mark-good before reboot, successful trial, failed trial + fallback,
   mark-bad booted with and without a bootable other bank); bitbake parse
   of the gated variables for `00395-02-00365` (A/B) and
-  `00395-00365v3` (single-bank). Everything below predates both changes
-  and needs repeating against a rebuilt image + bundle — at minimum an
-  A→B→A round trip, the rollback sabotage test, and confirming
-  `rauc status` no longer changes `upgrade_available`/`bootcount`.
+  `00395-00365v3` (single-bank).
 
 - **eMMC install/reboot/verify, both directions (A→B and B→A):** PASS.
   Confirmed via `rauc status`, `/proc/cmdline`, and a demo marker file.

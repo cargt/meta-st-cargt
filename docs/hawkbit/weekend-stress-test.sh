@@ -3,6 +3,12 @@
 # Cycles both DUTs sequentially: rebuild -> bundle -> push via hawkBit ->
 # wait for the device to auto-install+reboot (post_update_reboot=true) ->
 # verify it landed on the expected slot with a good boot status -> repeat.
+# Every ROLLBACK_TEST_EVERY'th cycle for a machine is a rollback-safety test
+# instead of a normal update: deliberately corrupt the inactive slot, force
+# a boot into it, and confirm the platform's bootcount/watchdog logic
+# automatically falls back to the previous good slot on its own (see
+# rollback_test() below) - this exercises the A/B rollback-safety path, not
+# just the happy-path update cycle.
 # Meant to run for an extended, unattended period (e.g. a weekend) - stop
 # any time with: touch <LOG_DIR>/STOP
 #
@@ -27,6 +33,8 @@ AUTH="admin:admin"
 MAX_CONSEC_FAILURES=3
 HAWKBIT_COMPOSE_DIR=$LOG_DIR
 ARTIFACTREPO_RESET_THRESHOLD_KB=$((5 * 1024 * 1024))  # 5GB
+ROLLBACK_TEST_EVERY=4
+ROLLBACK_BOOT_TIMEOUT=600  # 10min - generous, since a working rollback may need several failed-boot/watchdog-reset attempts before bootcount falls back
 
 declare -A DUT_IP=(
     [REPLACE_WITH_MACHINE_NAME_1]=REPLACE_WITH_IP_1
@@ -84,9 +92,18 @@ maybe_reset_hawkbit() {
     curl -s -X PUT "$HAWKBIT/rest/v1/system/configs/authentication.targettoken.enabled" \
         -u "$AUTH" -H 'Content-Type: application/json' -d '{"value": true}' > /dev/null
 
-    for machine in "${!DUT_TOKEN[@]}"; do
+    # Not "machine" - a bash for-loop variable isn't automatically function-
+    # local, so reusing the main loop's own variable name here would silently
+    # clobber it as a side effect the moment this function returns, leaving
+    # the caller's next run_cycle/rollback_test call operating on whichever
+    # DUT this loop last iterated to instead of the one it actually meant to
+    # process next. Confirmed the hard way: this exact collision caused the
+    # main loop to get stuck reprocessing one DUT every time a reset fired,
+    # silently starving the other one of cycles for hours.
+    local reset_machine
+    for reset_machine in "${!DUT_TOKEN[@]}"; do
         curl -s -X POST "$HAWKBIT/rest/v1/targets" -u "$AUTH" -H 'Content-Type: application/json' \
-            -d "[{\"controllerId\": \"$machine\", \"name\": \"$machine\", \"securityToken\": \"${DUT_TOKEN[$machine]}\"}]" > /dev/null
+            -d "[{\"controllerId\": \"$reset_machine\", \"name\": \"$reset_machine\", \"securityToken\": \"${DUT_TOKEN[$reset_machine]}\"}]" > /dev/null
     done
     log "=== hawkBit stack reset complete, targets re-registered ==="
 }
@@ -122,12 +139,26 @@ ssh_dut_retry() {
     return 1
 }
 
+# Wait (up to $1 seconds) for the DUT to respond to SSH at all - used after
+# a reboot where we don't yet know which slot (if any) it'll come back on.
+wait_for_ssh() {
+    local ip=$1 timeout=$2
+    local deadline=$(( $(date +%s) + timeout ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        if ssh_dut "$ip" "echo UP" 2>/dev/null | grep -q UP; then
+            return 0
+        fi
+        sleep 10
+    done
+    return 1
+}
+
 run_cycle() {
     local machine=$1
     local ip=${DUT_IP[$machine]}
     local cycle=${CYCLE_COUNT[$machine]}
 
-    log "=== $machine cycle $cycle: starting ==="
+    log "=== $machine cycle $cycle: starting (normal update) ==="
 
     # 1. Record which slot/marker it's on now, so we know what "changed"
     #    actually means once the wait loop below starts polling again.
@@ -216,7 +247,107 @@ run_cycle() {
     return 1
 }
 
-log "=== weekend stress test starting (PID $$) ==="
+# Deliberately break the currently-INACTIVE slot's ability to boot to
+# userspace, then reboot into it, and confirm the platform's bootcount /
+# watchdog rollback logic automatically falls back to the previous good
+# slot on its own - without any RAUC involvement, since this bypasses RAUC
+# entirely (we're not doing a new install here, just corrupting whatever
+# content is already sitting in the inactive slot from the last normal
+# cycle, then forcing a boot attempt into it via RAUC's own bootloader
+# backend, the same one a real install uses).
+#
+# Deliberately NOT repaired afterwards if it fails to roll back: the next
+# normal run_cycle() for this machine installs fresh content into whichever
+# slot is inactive anyway, so a corrupted-but-inactive slot self-heals on
+# the next normal cycle. The only real risk is the rollback itself not
+# happening - if the DUT doesn't come back within ROLLBACK_BOOT_TIMEOUT,
+# stop immediately and flag it; don't attempt any further remote recovery.
+rollback_test() {
+    local machine=$1
+    local ip=${DUT_IP[$machine]}
+    local cycle=${CYCLE_COUNT[$machine]}
+
+    log "=== $machine cycle $cycle: starting (ROLLBACK-SAFETY TEST) ==="
+
+    local before before_slot inactive_slot inactive_letter
+    before=$(ssh_dut_retry "$ip" "rauc status 2>&1 | grep 'Booted from'")
+    if [ $? -ne 0 ]; then
+        log "$machine cycle $cycle: FAIL - could not reach DUT to check current slot before rollback test"
+        return 1
+    fi
+    before_slot=$(echo "$before" | grep -oE '\([AB]\)' | tr -d '()')
+    if [ "$before_slot" = "A" ]; then
+        inactive_letter=b
+    elif [ "$before_slot" = "B" ]; then
+        inactive_letter=a
+    else
+        log "$machine cycle $cycle: FAIL - could not determine current slot from '$before'"
+        return 1
+    fi
+    log "$machine cycle $cycle: currently booted from slot $before_slot; will corrupt+boot inactive slot $inactive_letter"
+
+    # Corrupt init (both traditional and systemd's own binary, so this
+    # can't quietly fall through to whichever one the image actually
+    # uses) in the inactive slot's rootfs, directly via its partition
+    # symlink - not through RAUC, since we want last cycle's already-
+    # installed content there, not a fresh install. If the slot has no
+    # valid filesystem at all (e.g. never written by a real cycle yet),
+    # that's already an unbootable state on its own - don't treat the
+    # mount failure as a script error, just proceed to the reboot with
+    # a note in the log.
+    local corrupt_out
+    corrupt_out=$(ssh_dut_retry "$ip" "
+        mkdir -p /mnt/rollback-test
+        if mount /run/cargt-part/rootfs-$inactive_letter /mnt/rollback-test 2>&1; then
+            mv /mnt/rollback-test/sbin/init /mnt/rollback-test/sbin/init.rollback-test-disabled 2>/dev/null || true
+            rm -f /mnt/rollback-test/usr/lib/systemd/systemd
+            sync
+            umount /mnt/rollback-test
+            echo corrupted
+        else
+            echo already-invalid-filesystem
+        fi
+    ")
+    if [ $? -ne 0 ]; then
+        log "$machine cycle $cycle: FAIL - could not reach DUT to corrupt inactive slot $inactive_letter"
+        return 1
+    fi
+    log "$machine cycle $cycle: inactive slot $inactive_letter state before reboot: $corrupt_out"
+
+    # Make the corrupted slot the one that boots next, then reboot into
+    # it - using RAUC's own bootloader backend (the same one a real
+    # install uses), not a raw U-Boot env write, so this exercises the
+    # actual production activation path. "other" = the inactive slot,
+    # i.e. exactly the one we just corrupted.
+    ssh_dut_retry "$ip" "rauc status mark-active other" > /dev/null
+    if [ $? -ne 0 ]; then
+        log "$machine cycle $cycle: FAIL - 'rauc status mark-active' failed, aborting before reboot"
+        return 1
+    fi
+    ssh_dut "$ip" "reboot" > /dev/null 2>&1
+    log "$machine cycle $cycle: rebooted into deliberately-broken slot $inactive_letter, waiting up to ${ROLLBACK_BOOT_TIMEOUT}s for rollback"
+
+    if ! wait_for_ssh "$ip" "$ROLLBACK_BOOT_TIMEOUT"; then
+        log "$machine cycle $cycle: CRITICAL FAIL - DUT did not come back within ${ROLLBACK_BOOT_TIMEOUT}s. Rollback-safety logic may not be working, or the board is stuck (e.g. boot-looping the bad slot, or held at a bootloader prompt). NOT attempting further remote recovery - needs physical/serial-console attention."
+        return 2
+    fi
+
+    local after after_slot
+    after=$(ssh_dut_retry "$ip" "rauc status 2>&1 | grep -E 'Booted from|boot status'")
+    after_slot=$(echo "$after" | grep -oE '\([AB]\)' | head -1 | tr -d '()')
+    if [ "$after_slot" = "$before_slot" ]; then
+        log "$machine cycle $cycle: PASS - automatically rolled back to previous good slot $before_slot after broken slot $inactive_letter failed to boot ($after)"
+        return 0
+    elif [ "$after_slot" = "$(echo $inactive_letter | tr 'ab' 'AB')" ]; then
+        log "$machine cycle $cycle: CRITICAL FAIL - DUT came back but is somehow STILL on the deliberately-broken slot $inactive_letter ($after) - corruption may not have actually prevented boot, or rollback logic chose wrong slot. Needs investigation."
+        return 1
+    else
+        log "$machine cycle $cycle: FAIL - DUT came back but slot state is unclear: $after"
+        return 1
+    fi
+}
+
+log "=== weekend stress test starting (PID $$) - rollback-safety test every $ROLLBACK_TEST_EVERY cycles ==="
 log "Stop any time with: touch $STOP_FILE"
 
 while true; do
@@ -233,9 +364,23 @@ while true; do
         fi
         all_disabled=0
 
-        maybe_reset_hawkbit
         CYCLE_COUNT[$machine]=$((CYCLE_COUNT[$machine] + 1))
-        if run_cycle "$machine"; then
+        cycle_result=0
+        if [ $(( CYCLE_COUNT[$machine] % ROLLBACK_TEST_EVERY )) -eq 0 ]; then
+            rollback_test "$machine"
+            cycle_result=$?
+            if [ "$cycle_result" = "2" ]; then
+                log "$machine: CRITICAL rollback-safety failure - DISABLING further cycles for this DUT immediately. Needs physical attention, do not attempt further automated recovery."
+                DISABLED[$machine]=1
+                continue
+            fi
+        else
+            maybe_reset_hawkbit
+            run_cycle "$machine"
+            cycle_result=$?
+        fi
+
+        if [ "$cycle_result" = "0" ]; then
             CONSEC_FAILURES[$machine]=0
         else
             CONSEC_FAILURES[$machine]=$((CONSEC_FAILURES[$machine] + 1))
