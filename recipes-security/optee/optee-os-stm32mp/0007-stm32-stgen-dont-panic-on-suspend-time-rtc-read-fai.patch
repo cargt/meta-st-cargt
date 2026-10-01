@@ -1,0 +1,55 @@
+From 862ce1ef089cbb2f623b49ca060571a568dc4553 Mon Sep 17 00:00:00 2001
+From: Graham Taylor-Jones <graham.taylor-jones@cargt.com>
+Date: Wed, 30 Sep 2026 13:02:47 -0500
+Subject: [PATCH] stm32-stgen: don't panic on suspend-time RTC read
+ failure
+
+This is the fix for the actual customer-reported bug: poweroff
+resets the board (IWDG) instead of powering off. Root cause,
+isolated via the checkpoint tracing in earlier commits:
+stm32_stgen_pm_suspend() panics when it can't read the RTC
+calendar, and on this board that read fails deterministically at
+this exact point in the suspend sequence (previous commit made
+stm32_rtc_read_calendar() return an error here instead of
+panicking itself, surfacing this).
+
+The RTC read in stm32_stgen_pm_suspend() is a best-effort save
+used only to compensate the STGEN counter for elapsed time on
+resume - not essential to actually suspending or powering off.
+Panicking here turns a cosmetic time-keeping inaccuracy into a
+full system crash, which is what's producing the IWDG reset
+instead of a clean power-off. Log and continue instead: on
+failure, stgen_d.calendar simply keeps its last successfully-read
+value, and resume's drift compensation is slightly stale rather
+than exact.
+
+Signed-off-by: Graham Taylor-Jones <graham.taylor-jones@cargt.com>
+---
+ core/drivers/counter/stm32_stgen.c | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/core/drivers/counter/stm32_stgen.c b/core/drivers/counter/stm32_stgen.c
+index 63a8b07e9..b2771061b 100644
+--- a/core/drivers/counter/stm32_stgen.c
++++ b/core/drivers/counter/stm32_stgen.c
+@@ -98,8 +98,17 @@
+ 	 * it spins forever instead of timing out - eventually caught only
+ 	 * by the independent hardware watchdog resetting the board.
+ 	 */
++	/*
++	 * Don't let a failure here (e.g. the RTC's "registers
++	 * synchronized" flag not settling in time) panic the whole
++	 * system mid system-off: this is a best-effort save for drift
++	 * compensation on resume, not essential to actually cutting
++	 * power. Worst case on a failed read, stgen_d.calendar keeps
++	 * whatever it was last successfully read as, and resume's drift
++	 * compensation is slightly stale rather than exact.
++	 */
+ 	if (stm32_rtc_get_calendar(stgen_d.calendar))
+-		panic("Could not get RTC calendar at suspend");
++		EMSG("Could not get RTC calendar at suspend, continuing anyway");
+ 
+ 	/*
+ 	 * Disable STGEN counter. At this point, it should be stopped by
+--
+2.43.0

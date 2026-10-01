@@ -1,0 +1,66 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Graham Taylor-Jones <graham.taylor-jones@cargt.com>
+Date: Wed, 30 Sep 2026 17:45:00 -0500
+Subject: [PATCH] stm32-stgen: don't panic on resume-time RTC read failure
+
+stm32_stgen_pm_resume() panics if it can't read the RTC calendar, used
+only to compensate the STGEN counter for time spent in suspend - not
+essential to actually resuming. Same category as the suspend-side fix
+(previous commit); this closes the matching gap on resume, confirmed
+present in the pristine OP-TEE source (core/drivers/counter/stm32_stgen.c,
+extracted from ST's vendor patch) before this branch existed - no prior
+patch touched the resume path.
+
+Reviewer note: on a failed read the counter just keeps running from
+where it was suspended (slightly behind real time) instead of crashing
+resume - no behavior change once the RTC clock-mux fix (see the DT
+commit in meta-cargt-stm32mp-addons) makes reads reliable; this is the
+fallback for if a read ever isn't.
+
+Signed-off-by: Graham Taylor-Jones <graham.taylor-jones@cargt.com>
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+---
+ core/drivers/counter/stm32_stgen.c | 24 ++++++++++++++++--------
+ 1 file changed, 16 insertions(+), 8 deletions(-)
+
+diff --git a/core/drivers/counter/stm32_stgen.c b/core/drivers/counter/stm32_stgen.c
+index b277106..bef245f 100644
+--- a/core/drivers/counter/stm32_stgen.c
++++ b/core/drivers/counter/stm32_stgen.c
+@@ -135,16 +135,24 @@ static void stm32_stgen_pm_resume(void)
+ 	/* STGEN clocks are already restored by the clock driver */
+ 	io_clrbits32(stgen_d.base + STGENC_CNTCR, BIT(0));
+
+-	/* Read the current time from the RTC to update system counter */
+-	if (stm32_rtc_get_calendar(&cur_calendar))
+-		panic("Could not get RTC calendar at resume");
+-
+-	nb_pm_count_ticks = stm32_rtc_diff_calendar_tick(&cur_calendar,
+-							 stgen_d.calendar,
+-							 clock_src_rate);
+-
+-	DMSG("Time spent in low-power: %ld ms",
+-	     (nb_pm_count_ticks * 1000U) / clock_src_rate);
++	/*
++	 * Don't let a failure here panic resume: this RTC read is only
++	 * used to compensate the STGEN counter for time spent in suspend,
++	 * not essential to actually resuming. Worst case on a failed
++	 * read, skip the drift-compensation update below and leave the
++	 * counter running from where it was suspended (slightly behind
++	 * real time) instead of crashing resume.
++	 */
++	if (stm32_rtc_get_calendar(&cur_calendar)) {
++		EMSG("Could not get RTC calendar at resume, continuing anyway");
++	} else {
++		nb_pm_count_ticks = stm32_rtc_diff_calendar_tick(&cur_calendar,
++								 stgen_d.calendar,
++								 clock_src_rate);
++
++		DMSG("Time spent in low-power: %ld ms",
++		     (nb_pm_count_ticks * 1000U) / clock_src_rate);
++	}
+
+ 	/* Update the counter value with the number of pm ticks */
+ 	if (ADD_OVERFLOW(counter_val, nb_pm_count_ticks, &counter_val))
+--
+2.43.0
