@@ -1,0 +1,15 @@
+[Unit]
+Description=RAUC drag-and-drop bundle installer (dev/lab use only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Needs root: `rauc install` and the /reboot endpoint both require it, and
+# unlike rauc-hawkbit-updater there's no narrower capability that covers
+# "run rauc install directly" the way CAP_SYS_BOOT covers "call reboot(2)".
+ExecStart=/usr/bin/rauc-web-updater.py
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
