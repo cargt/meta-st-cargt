@@ -1201,6 +1201,39 @@ passed 12+ rollback-safety tests per DUT with zero failures, validating
 the backend-rework + per-machine A/B gating item below on real hardware
 for the first time.
 
+### 5.6 Drag-and-drop single-board updates (no hawkBit)
+
+For pushing one `.raucb` bundle to one bench-top board without standing
+up hawkBit or scripting the REST calls in §5.3, `rauc-web-updater`
+(`recipes-support/rauc-web-updater/`) is a standalone recipe that installs
+a tiny web page on the board itself, listening on port 8080:
+
+```
+http://<dut-ip>:8080/
+```
+
+Drop a `.raucb` file onto the page (or click to browse), and it uploads,
+runs `rauc install` synchronously, and shows the install log plus a
+"Reboot now" link on success - it deliberately doesn't reboot on its own,
+so whoever just dropped a bundle gets to see the result first. The same
+flow works from a script via curl:
+
+```bash
+curl -s -X POST -F "bundle=@my-update.raucb" http://<dut-ip>:8080/upload
+curl -s http://<dut-ip>:8080/reboot   # once you're happy with the log
+```
+
+Like `rauc-hawkbit-updater`, it's wired into `cargt-image-dev` only (same
+`COMBINED_FEATURES` rauc gate), not the production weston image, and it's
+unauthenticated by design - a dev/lab convenience for one board at a time
+on a trusted network, not a fleet-management tool. See the script's own
+docstring for the reasoning.
+
+**Verified on hardware** (`stm32mp25-cargt-00395-02-00365`): page load,
+curl-simulated upload+install (full install log returned, slot updated),
+`/reboot` trigger, clean reboot with the slot flipped and boot status
+good.
+
 ## Testing status
 
 - **Backend rework (`set-state`, read-only `get-state`/`get-primary`,
