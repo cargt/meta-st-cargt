@@ -4,3 +4,6 @@
 # feed, otherwise everything linking alsa (pulseaudio, pipewire, gstreamer,
 # ffmpeg, ...) becomes board-specific too.
 PACKAGE_ARCH:stm32mpcommon = "${TUNE_PKGARCH}"
+
+# Changes feed in this release; see the PR note in conf/layer.conf.
+PR = "r1"

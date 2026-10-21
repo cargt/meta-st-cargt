@@ -7,3 +7,6 @@ PACKAGE_ARCH = "${TUNE_PKGARCH}"
 # ACCEPT_EULA_<machine>); it does not affect the unpacked binaries. The check
 # still runs on every build - this only keeps MACHINE out of the task signature.
 do_unpack[vardepsexclude] += "MACHINE"
+
+# Changes feed in this release; see the PR note in conf/layer.conf.
+PR = "r1"
