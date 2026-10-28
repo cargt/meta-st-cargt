@@ -105,8 +105,10 @@ in step by hand:
 - **eMMC**: ST's `flashlayout-stm32mp.bbclass` generates a single-bank
   FlashLayout TSV from `PARTITIONS_IMAGES` (not from the `.wks.in`), and
   `recipes-cargt/images/cargt-rauc-ab-flashlayout.inc` then splices it
-  into the A/B layout (`bootfs`/`vendorfs`/`rootfs` → `-a`/`-b`, only
-  for the main `CUBEMX_DTB` TSV, fastboot and optee bootschemes). Used by
+  into the A/B layout (`bootfs`/`vendorfs`/`rootfs` → `-a`/`-b`, for
+  every eMMC and SD card TSV — the main `CUBEMX_DTB` one and each
+  per-panel `-glt*` one — in the fastboot, optee, opteemin and
+  fastboot-opteemin bootschemes). Used by
   STM32CubeProgrammer / `production_program_service.py`. `00395-01-00365`
 was brought up to the same layout afterward, in its own equivalently-named
 `.wks.in` files - same partition structure and sizes, same minimum-media-size
@@ -900,8 +902,8 @@ building it alone also builds them. It lands in
 The A/B layout is a different partition table, so a board still on the
 single-bank layout **cannot** be converted by OTA — flash it once:
 - eMMC: STM32CubeProgrammer with the patched
-  `FlashLayout_emmc_<CUBEMX_DTB>-optee.tsv` (the main variant, not a
-  `-glt*` one — only the main TSV is spliced to A/B).
+  `FlashLayout_emmc_<CUBEMX_DTB>-optee.tsv` (the main variant) or a
+  per-panel `-glt*` one — all of them are spliced to A/B.
 - SD card: the `.wic` / `.wic.bmap` from the same deploy directory.
 
 The `-b` bank starts empty (eMMC) or as a copy of `-a`'s FIP only (SD

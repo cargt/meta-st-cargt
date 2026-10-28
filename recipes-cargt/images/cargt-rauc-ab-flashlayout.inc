@@ -1,8 +1,9 @@
-# Patches the auto-generated eMMC flashlayout TSVs (fastboot and optee
-# bootschemes, main CUBEMX_DTB variant only - it supports all displays, so
-# the per-panel -glt* variant TSVs are intentionally left untouched/single-
-# bank) to duplicate bootfs/vendorfs/rootfs into A/B slots for RAUC OTA
-# updates.
+# Patches the auto-generated eMMC and SD card flashlayout TSVs (fastboot,
+# optee, opteemin and fastboot-opteemin bootschemes, every devicetree
+# variant - the main CUBEMX_DTB one and the per-panel -glt* ones alike) to duplicate bootfs/vendorfs/rootfs into
+# A/B slots for RAUC OTA updates. Every variant must be patched: the machine
+# config's root=/dev/mmcblk1p10 (eMMC) / mmcblk0p12 (SD) and rauc.slot=A
+# apply to all of them, so a single-bank TSV flashes a board that won't boot.
 #
 # ST's flashlayout-stm32mp.bbclass has no built-in concept of A/B
 # duplication for PARTITIONS_IMAGES-driven partitions (unlike fip-a/fip-b,
@@ -35,14 +36,21 @@ python do_create_flashlayout_config:append () {
     # this appended block) returns, so DEPLOY_DIR_IMAGE doesn't have
     # today's files yet at this point.
     deploydir = d.getVar('FLASHLAYOUT_DESTDIR')
-    dtb = d.getVar('CUBEMX_DTB')
 
-    for bootscheme in ('fastboot', 'optee'):
-        tsv_path = os.path.join(deploydir, bootscheme, 'FlashLayout_emmc_%s-%s.tsv' % (dtb, bootscheme))
-        if not os.path.exists(tsv_path):
-            bb.warn('RAUC A/B flashlayout patch: %s not found, skipping' % tsv_path)
+    # 'extensible' (rootfs-only, grows to fill the SD card) and 'deleteall'
+    # aren't bootable full layouts, so they're left alone.
+    for bootscheme in ('fastboot', 'optee', 'opteemin', 'fastboot-opteemin'):
+        schemedir = os.path.join(deploydir, bootscheme)
+        tsvs = []
+        if os.path.isdir(schemedir):
+            tsvs = sorted(f for f in os.listdir(schemedir)
+                          if f.startswith(('FlashLayout_emmc_', 'FlashLayout_sdcard_'))
+                          and f.endswith('-%s.tsv' % bootscheme))
+        if not tsvs:
+            bb.warn('RAUC A/B flashlayout patch: no eMMC/SD card TSVs in %s, skipping' % schemedir)
             continue
-        rauc_ab_patch_flashlayout_tsv(tsv_path)
+        for tsv in tsvs:
+            rauc_ab_patch_flashlayout_tsv(os.path.join(schemedir, tsv))
 }
 
 def rauc_ab_patch_flashlayout_tsv(tsv_path):
