@@ -160,7 +160,9 @@ Order as implemented by RAUC 1.15.2 (`src/install.c`):
    install, points `bootcmd` back at the running bank — so an interrupted
    write can never be booted.
 3. RAUC writes each bundle slot (`fip`, `bootfs`, `vendorfs`, `rootfs`)
-   straight to the **inactive** bank's partitions.
+   straight to the **inactive** bank's partitions. The `fip` slot goes
+   through the bundle's `fip-install-hook.sh` install hook, which picks
+   the FIP matching the running panel variant (§3.4).
 4. RAUC calls `st-boot-script.sh set-primary <A|B>`, which commits the
    new bank as "boot this one next" by rewriting U-Boot's `bootcmd`/
    `altbootcmd` and arming bootcount (§2.2 step 2, §2.5), and clears the
@@ -537,6 +539,7 @@ RAUC A/B OTA update cycle confirmed working on the SD card.
 | `recipes-core/rauc/rauc-conf.bbappend` + `files/<machine>/system.conf`, `files/post-install.sh`, `files/st-boot-script.sh`, `files/ca.cert.pem` | The actual RAUC config + custom bootloader backend (§2.5) + post-install patching logic (§2.3) — `system.conf` is per-machine (only its `compatible=` line differs), one subdirectory per board. Only installed on A/B machines; others get meta-rauc's stock example config. `PACKAGE_ARCH = MACHINE_ARCH` |
 | `recipes-core/fwu-gen-metadata/fwu-gen-metadata-v2.bb` + `files/update_metadata.sh` | Writes TF-A FWU metadata (v2 format) via `mkfwumdata`; fixed platform-wide UUIDs, not per-board |
 | `recipes-core/bundles/update-st-bundle-stm32mp25-cargt-00395-02-00365.bb`, `update-st-bundle-stm32mp25-cargt-00395-01-00365.bb` | The bundle recipes, one per board (slots, compatible string, signing key/cert), each with `COMPATIBLE_MACHINE` restricted to its own board |
+| `recipes-core/bundles/update-st-bundle-cargt-fip.inc` + `files/fip-install-hook.sh` | Shared by both bundle recipes: adds the per-panel FIPs to the bundle and the `fip` slot install hook that writes the one matching the running board (§3.4) |
 | `recipes-core/systemd/cargt-device-symlinks_1.0.bb` | The `/run/cargt-part/` symlink service (§2.4) |
 | `recipes-core/systemd/systemd-mount-partitions.bbappend` | Adds `-a` suffix to bootfs/vendorfs/rootfs in `MOUNT_PARTITIONS_LIST` (not userfs), A/B machines only |
 | `recipes-core/udev/udev-extraconf_%.bbappend` + `files/cargt-ab-partitions.ignorelist` | Excludes A/B partitions (eMMC `mmcblk1p1`–`p11`, SD card `mmcblk0p1`–`p13`; §3.5) from udev's generic auto-mounter — without this, the automounter races RAUC for exclusive access to the inactive slot ("Device or resource busy") |
@@ -579,9 +582,27 @@ is identical apart from the machine name):
   material uses `st-image-weston`, which isn't the image built here).
   Slot filenames hardcode the distro name too.
 - `fip` is the eMMC FIP (`...-optee-emmc.bin`); it is byte-identical to
-  the `-sdcard.bin` build, so the same bundle serves both media. It is the
-  main (all-displays) variant, so a board flashed with a per-panel
-  `-glt*` FIP gets the generic one on its first update.
+  the `-sdcard.bin` build, so the same bundle serves both media. The slot
+  image is the main (board-wide) variant. The bundle also carries
+  `fip/fip-<dt>-optee-emmc.bin` for every other entry in the machine's
+  `STM32MP_DT_FILES_EMMC` (the four per-panel `-glt*` DTs), added by
+  `update-st-bundle-cargt-fip.inc`, so the panel list follows the
+  machine conf.
+- The `fip` slot has a RAUC `install` hook (`fip-install-hook.sh`,
+  `RAUC_SLOT_fip[hooks] = "install"`) in place of RAUC's own raw write.
+  It reads `/proc/device-tree/compatible` entry 0. On a per-panel board
+  that is `cargt,<dtb basename>` (e.g.
+  `cargt,stm32mp257f-cargt-00395-01-00365-glt0557201280is1`, the same
+  string U-Boot derives `fdtfile` from), and the hook writes
+  `fip/fip-<dtb basename>-optee-emmc.bin` to the inactive `fip` slot. If
+  entry 0 isn't a `cargt,` name, or the bundle has no FIP for it (the
+  board-wide DT has none under `fip/`), it writes the board-wide slot
+  image instead. Either way it logs the chosen FIP to RAUC's journal
+  (`fip-install-hook: writing fip-...bin to ...`). So a board flashed
+  with a per-panel FlashLayout keeps its panel DT, panel, and touch
+  across updates. This depends on the per-panel DTs' unique
+  `cargt,<dtb>` first compatible; a board still running a DT without it
+  falls back to the board-wide FIP, as every board did before the hook.
 - `COMPATIBLE_MACHINE` restricts each bundle recipe to its own board.
 - No bundle version is set and there is no downgrade protection.
 - Signed with a development cert/key pair
