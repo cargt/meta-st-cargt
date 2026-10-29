@@ -1,0 +1,117 @@
+From: Tim Carney <tim.carney@cargt.com>
+Date: Thu, 29 Oct 2026 00:00:00 +0000
+Subject: [PATCH] psplash-drm: add --angle to turn the image with the panel
+
+psplash-drm draws straight into the panel's native scanout buffer, so on a
+panel that Weston turns with an [output] transform the image comes out on
+its side. --angle 90/180/270 turns the loaded image clockwise before it is
+centred, like oe-core psplash's --angle.
+
+Upstream-Status: Inappropriate [Cargt specific]
+Signed-off-by: Tim Carney <tim.carney@cargt.com>
+---
+--- a/basic_splash_drm.c
++++ b/basic_splash_drm.c
+@@ -46,6 +46,7 @@
+ static int display_max_size = MAX_HEIGHT_THRESHOLD;
+ static int force_hdmi = 0;
+ static int force_no_hdmi = 0;
++static int angle = 0;
+ volatile int loop = 0;
+ //----------------------
+ // Prototype
+@@ -844,6 +845,46 @@
+ }
+ 
+ 
++/*
++ * Turn an image clockwise by 90, 180 or 270 degrees, for a panel mounted
++ * rotated (as Weston's [output] transform does). Returns the new image and
++ * releases the old one; returns the old one if the angle isn't a turn.
++ */
++static pixman_image_t *rotate_image(pixman_image_t *src, int deg)
++{
++    int w = pixman_image_get_width(src);
++    int h = pixman_image_get_height(src);
++    int sstride = pixman_image_get_stride(src) / 4;
++    uint32_t *s = (uint32_t *)pixman_image_get_data(src);
++    int rw = (deg == 90 || deg == 270) ? h : w;
++    int rh = (deg == 90 || deg == 270) ? w : h;
++    pixman_image_t *dst;
++    uint32_t *d;
++    int x, y;
++
++    if (deg != 90 && deg != 180 && deg != 270)
++        return src;
++
++    dst = pixman_image_create_bits(pixman_image_get_format(src), rw, rh, NULL, rw * 4);
++    if (!dst)
++        return src;
++    d = (uint32_t *)pixman_image_get_data(dst);
++
++    for (y = 0; y < h; y++) {
++        for (x = 0; x < w; x++) {
++            uint32_t p = s[y * sstride + x];
++            if (deg == 90)
++                d[x * rw + (h - 1 - y)] = p;
++            else if (deg == 180)
++                d[(h - 1 - y) * rw + (w - 1 - x)] = p;
++            else
++                d[(w - 1 - x) * rw + y] = p;
++        }
++    }
++    pixman_image_unref(src);
++    return dst;
++}
++
+ int
+ draw_frame(struct modeset_dev *dev, const char *filename)
+ {
+@@ -876,7 +917,7 @@
+ // --------------------------------------------- //
+ //           Main
+ // --------------------------------------------- //
+-static const char *shortopts = "wb:f:hFNrn:l";
++static const char *shortopts = "wb:f:hFNrn:la:";
+ 
+ static const struct option longopts[] = {
+     {"wait",    no_argument,       0, 'w'},
+@@ -889,6 +930,7 @@
+     {"force-no-hdmi", no_argument,       0, 'N'},
+     {"help",          no_argument,       0, 'h'},
+     {"loop", no_argument, 0, 'l'},
++    {"angle", required_argument, 0, 'a'},
+     {0, 0, 0, 0}
+ };
+ 
+@@ -904,6 +946,7 @@
+             "  -r  --framerate             Frame per second\n"
+             "  -n  --numbre                Numbre of images\n"
+             "  -l  --loop                  Looping annimation\n"
++            "  -a  --angle=0|90|180|270    Turn the image clockwise\n"
+             "  -F, --force-hdmi            Force to display on hdmi\n"
+             "  -m, --maxsize=max           size to negociate\n"
+             "  -N, --force-no-hdmi         Force to not use hdmi\n"
+@@ -976,6 +1019,13 @@
+             }
+             frame_delay_us = 1000000 / framerate;
+             break;
++        case 'a':
++            angle = atoi(optarg);
++            if (angle != 0 && angle != 90 && angle != 180 && angle != 270) {
++                fprintf(stderr, "Invalid angle: %s\n", optarg);
++                usage(EXIT_FAILURE);
++            }
++            break;
+         case 'l': // loop for animation
+             loop = 1;
+             printf("Looping animation enabled\n");
+@@ -1100,6 +1150,8 @@
+     modeset_draw_bgcolor (background_red, background_green, background_blue);
+     if (!animation && (strlen(filename) > 0))
+         pixman_image  = load_image(filename);
++    if (pixman_image != NULL && angle)
++        pixman_image = rotate_image(pixman_image, angle);
+     if (pixman_image != NULL) {
+         struct modeset_dev *iter;
+         int img_width, img_height;

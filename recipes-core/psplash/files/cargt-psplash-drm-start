@@ -1,0 +1,71 @@
+#!/bin/sh
+# Start psplash-drm in the configured theme, turned like the Weston
+# desktop and with a logo sized to the screen. Replaces ST's
+# psplash-drm-start.sh, which picks ST pictures by board and gives up on
+# boards with neither LVDS nor HDMI (the 00365 DSI panels).
+
+CARGT_SPLASH_THEME=light
+[ -r /etc/default/psplash ] && . /etc/default/psplash
+
+case $CARGT_SPLASH_THEME in
+dark) bg=004437 ;;
+*) CARGT_SPLASH_THEME=light; bg=f7f9fa ;;
+esac
+
+# The first connected display, e.g. /sys/class/drm/card0-DSI-1. A
+# connector's sysfs status and modes are only what the last probe found,
+# and with no fbdev emulation nothing probes before Weston, so they read
+# "unknown" and empty at boot. Writing "detect" probes the connector.
+# Give the connectors up to 5 s to turn up after card0.
+conn=
+i=0
+while [ -z "$conn" ] && [ $i -lt 50 ]; do
+    for s in /sys/class/drm/card*-*/status; do
+        echo detect > "$s" 2>/dev/null
+        if [ "$(cat "$s" 2>/dev/null)" = connected ]; then
+            conn=${s%/status}
+            break
+        fi
+    done
+    [ -n "$conn" ] || sleep 0.1
+    i=$((i + 1))
+done
+[ -n "$conn" ] || exit 0
+name=${conn##*/card[0-9]-}
+
+# Weston turns the desktop by the [output] transform in weston.ini (the ST
+# weston.ini has rotate-90 on DSI-1); psplash-drm draws straight to the
+# panel, so turn the logo the same way.
+transform=$(awk -v name="$name" '
+    /^\[/ { out = ($0 == "[output]"); match_ = 0; next }
+    out && $0 == "name=" name { match_ = 1; next }
+    out && match_ && /^transform=/ { sub(/^transform=/, ""); print; exit }
+' /etc/xdg/weston/weston.ini 2>/dev/null)
+# Weston's rotate-N turns the desktop N degrees counter-clockwise in the
+# panel's buffer (checked against a weston-screenshooter capture), and
+# psplash-drm's --angle turns clockwise.
+case $transform in
+rotate-90) angle=270 ;;
+rotate-180) angle=180 ;;
+rotate-270) angle=90 ;;
+*) angle=0 ;;
+esac
+
+# 480 px logo unless the screen, as turned, has no room for it
+# (psplash-drm falls back to its built-in ST picture if the image is as
+# wide as the screen)
+size=480
+mode=$(head -n 1 "$conn/modes" 2>/dev/null)
+w=${mode%%x*}
+h=${mode#*x}
+case $angle in 90|270) w=$h ;; esac
+[ -n "$w" ] && [ "$w" -lt 520 ] 2>/dev/null && size=200
+
+# Draw on the kind of display found above: HDMI only, or all but HDMI
+case $name in
+HDMI*) hdmi=--force-hdmi ;;
+*) hdmi=--force-no-hdmi ;;
+esac
+
+exec /usr/bin/psplash-drm -w $hdmi --background $bg --angle $angle \
+    --filename=/usr/share/splashscreen/cargt-logo-$CARGT_SPLASH_THEME-$size.png
