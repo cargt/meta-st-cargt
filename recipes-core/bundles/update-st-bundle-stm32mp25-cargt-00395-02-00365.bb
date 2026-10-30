@@ -32,6 +32,10 @@ RAUC_SLOT_fip[type] = "boot"
 RAUC_SLOT_fip[file] = "fip/fip-stm32mp257f-cargt-00395-02-00365-optee-emmc.bin"
 RAUC_SLOT_fip[rename] = "fip-stm32mp257f-cargt-00395-02-00365-optee-emmc.bin"
 
+# Also ships the per-panel FIPs; an install hook writes the one matching
+# the running board.
+require update-st-bundle-cargt-fip.inc
+
 # Development-only signing key/cert - replace both for production use.
 RAUC_KEY_FILE = "${THISDIR}/files/development-1.key.pem"
 RAUC_CERT_FILE = "${THISDIR}/files/development-1.cert.pem"
