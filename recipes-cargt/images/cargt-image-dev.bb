@@ -60,7 +60,7 @@ CORE_IMAGE_EXTRA_INSTALL += " \
     vim \
     git \
     ${@bb.utils.contains('DISTRO_FEATURES', 'connman', 'connman-tools connman-tests connman-client', '', d)} \
-    ${@bb.utils.contains('DISTRO_FEATURES', 'networkmanager', 'networkmanager networkmanager-nmcli', '', d)} \
+    ${@bb.utils.contains('DISTRO_FEATURES', 'networkmanager', 'networkmanager networkmanager-nmcli networkmanager-nmtui', '', d)} \
     dtc \
     libiio libiio-tests \
     libp11 opensc openssl-bin \
