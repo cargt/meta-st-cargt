@@ -1,0 +1,21 @@
+#!/bin/sh
+# The 00379 mikroBUS display (GLT028240320IS1 on the ST7789T3 tinydrm
+# driver) is a plain SPI framebuffer: the GPU's buffers can't be scanned
+# out on it, so Weston's GL renderer fails to enable the output. When that
+# display is present, write a copy of weston.ini that uses the pixman
+# renderer and the small Cargt logo (the 480 px one doesn't fit 320x240),
+# where Weston finds it first ($XDG_CONFIG_HOME, set by the user unit
+# drop-in cargt-spi-panel.conf). Any other display keeps the stock
+# /etc/xdg/weston/weston.ini.
+dir=/run/cargt-weston
+rm -rf "$dir"
+for drv in /sys/class/drm/card*/device/driver; do
+    [ "$(basename "$(readlink -f "$drv")")" = st7789t3 ] || continue
+    mkdir -p "$dir"
+    sed -e '/^use-pixman=/d' \
+        -e '/^\[core\]/a use-pixman=true' \
+        -e 's|^\(background-image=.*/cargt-background-[a-z]*\)\.png$|\1-small.png|' \
+        /etc/xdg/weston/weston.ini > "$dir/weston.ini"
+    break
+done
+exit 0

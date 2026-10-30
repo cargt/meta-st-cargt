@@ -2,7 +2,13 @@
 # Light Gray, as in the boot splash. Both images are installed, so a device
 # can switch by editing background-image/background-color in weston.ini.
 # The images are the boot splash's 480 px logos, shared with psplash-drm.
+# cargt-background-<theme>-small.png is the splash's 200 px logo padded to
+# 200x48 with the theme color, for small panels such as the 320x240 00379
+# SPI display (cargt-weston-spi-panel switches to it at runtime). An even
+# height keeps "centered" on whole pixels; at 47 px the logo sat half a
+# pixel off and its top and bottom rows blended into dark lines.
 FILESEXTRAPATHS:prepend := "${THISDIR}/../../recipes-core/psplash/files:"
+FILESEXTRAPATHS:prepend := "${THISDIR}/${PN}:"
 
 # "dark" or "light". Dark by default, after the light boot splash
 # (CARGT_SPLASH_THEME in psplash-drm.bbappend).
@@ -19,6 +25,11 @@ CARGT_WESTON_PANEL_COLOR[light] = "0xff004437"
 SRC_URI += " \
     file://cargt-logo-dark-480.png \
     file://cargt-logo-light-480.png \
+    file://cargt-background-dark-small.png \
+    file://cargt-background-light-small.png \
+    file://cargt-weston-spi-panel \
+    file://cargt-weston-spi-panel.service \
+    file://cargt-spi-panel.conf \
 "
 
 # The ST weston.ini already has a [shell] background (ST's picture, scaled
@@ -28,6 +39,7 @@ SRC_URI += " \
 do_install:append() {
     for t in dark light; do
         install -Dm 0644 ${WORKDIR}/cargt-logo-$t-480.png ${D}${datadir}/weston/backgrounds/cargt-background-$t.png
+        install -Dm 0644 ${WORKDIR}/cargt-background-$t-small.png ${D}${datadir}/weston/backgrounds/cargt-background-$t-small.png
     done
     ini=${D}${sysconfdir}/xdg/weston/weston.ini
     sed -i -e 's|^background-image=.*|background-image=${datadir}/weston/backgrounds/cargt-background-${CARGT_WESTON_THEME}.png|' \
@@ -51,3 +63,18 @@ do_install:append() {
     grep -q 'start_up_demo_launcher.sh ] && continue' $start || \
         bbfatal "weston-start from meta-st-openstlinux changed; update the edit in ${FILE}"
 }
+
+# The 00379 SPI display can't use the GPU (GL renderer) and needs the small
+# logo: at boot, cargt-weston-spi-panel writes a pixman weston.ini to
+# /run/cargt-weston when it finds the display, and the user weston.service
+# drop-in points XDG_CONFIG_HOME there.
+do_install:append() {
+    install -Dm 0755 ${WORKDIR}/cargt-weston-spi-panel ${D}${libexecdir}/cargt-weston-spi-panel
+    install -Dm 0644 ${WORKDIR}/cargt-weston-spi-panel.service ${D}${systemd_system_unitdir}/cargt-weston-spi-panel.service
+    install -Dm 0644 ${WORKDIR}/cargt-spi-panel.conf ${D}${systemd_user_unitdir}/weston.service.d/cargt-spi-panel.conf
+}
+SYSTEMD_SERVICE:${PN} += "cargt-weston-spi-panel.service"
+FILES:${PN} += " \
+    ${libexecdir}/cargt-weston-spi-panel \
+    ${systemd_user_unitdir}/weston.service.d/cargt-spi-panel.conf \
+"
