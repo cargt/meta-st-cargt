@@ -9,6 +9,10 @@
 # FIPs come from the same fip-stm32mp deploy the slot image already
 # depends on.
 
+# Find the hook next to this file even when a recipe in another layer
+# includes the bundle recipe (e.g. meta-cargt-camera's demo bundle), where
+# the default FILESPATH only searches that layer.
+FILESEXTRAPATHS:prepend := "${@os.path.dirname(bb.utils.which(d.getVar('BBPATH'), 'recipes-core/bundles/files/fip-install-hook.sh'))}:"
 SRC_URI += "file://fip-install-hook.sh"
 # A recipe that fetches files must name its license file (bundle.bbclass
 # already defaults LICENSE to MIT).
