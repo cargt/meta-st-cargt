@@ -38,3 +38,16 @@ do_install:append() {
         grep -q '^panel-color=${@d.getVarFlag("CARGT_WESTON_PANEL_COLOR", d.getVar("CARGT_WESTON_THEME"))}$' $ini || \
         bbfatal "weston.ini from meta-st-openstlinux changed; update the edit in ${FILE}"
 }
+
+# Boot to the plain Weston desktop: weston-start runs every script in
+# /usr/local/weston-start-at-startup with Weston, and ST's
+# start_up_demo_launcher.sh there opens the full-screen demo launcher over
+# it. Skip that one; the panel's Launcher button still opens it. This is
+# done here because /usr/local is the userfs partition, which RAUC bundles
+# don't update, so changing demo-launcher wouldn't reach updated boards.
+do_install:append() {
+    start=${D}${bindir}/weston-start
+    sed -i -e '/for m in "$start_local_application_dir"\/\*; do/a\            [ "${m##*/}" = start_up_demo_launcher.sh ] \&\& continue' $start
+    grep -q 'start_up_demo_launcher.sh ] && continue' $start || \
+        bbfatal "weston-start from meta-st-openstlinux changed; update the edit in ${FILE}"
+}
