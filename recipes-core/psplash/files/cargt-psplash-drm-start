@@ -3,9 +3,17 @@
 # desktop and with a logo sized to the screen. Replaces ST's
 # psplash-drm-start.sh, which picks ST pictures by board and gives up on
 # boards with neither LVDS nor HDMI (the 00365 DSI panels).
+#
+# The initramfs runs this too, before switch_root, with CARGT_SPLASH_ROOT
+# set to where the rootfs is mounted (initramfs-module-cargt-splash).
+
+root=$CARGT_SPLASH_ROOT
+
+# Already up from the initramfs
+[ -z "$root" ] && pidof psplash-drm >/dev/null && exit 0
 
 CARGT_SPLASH_THEME=light
-[ -r /etc/default/psplash ] && . /etc/default/psplash
+[ -r $root/etc/default/psplash ] && . $root/etc/default/psplash
 
 case $CARGT_SPLASH_THEME in
 dark) bg=004437 ;;
@@ -40,7 +48,7 @@ transform=$(awk -v name="$name" '
     /^\[/ { out = ($0 == "[output]"); match_ = 0; next }
     out && $0 == "name=" name { match_ = 1; next }
     out && match_ && /^transform=/ { sub(/^transform=/, ""); print; exit }
-' /etc/xdg/weston/weston.ini 2>/dev/null)
+' $root/etc/xdg/weston/weston.ini 2>/dev/null)
 # Weston's rotate-N turns the desktop N degrees counter-clockwise in the
 # panel's buffer (checked against a weston-screenshooter capture), and
 # psplash-drm's --angle turns clockwise.
@@ -67,5 +75,8 @@ HDMI*) hdmi=--force-hdmi ;;
 *) hdmi=--force-no-hdmi ;;
 esac
 
-exec /usr/bin/psplash-drm -w $hdmi --background $bg --angle $angle \
-    --filename=/usr/share/splashscreen/cargt-logo-$CARGT_SPLASH_THEME-$size.png
+# From the initramfs, run the rootfs's psplash-drm with the rootfs's
+# libraries (the same glibc build as the initramfs's loader)
+[ -n "$root" ] && export LD_LIBRARY_PATH=$root/usr/lib
+exec $root/usr/bin/psplash-drm -w $hdmi --background $bg --angle $angle \
+    --filename=$root/usr/share/splashscreen/cargt-logo-$CARGT_SPLASH_THEME-$size.png

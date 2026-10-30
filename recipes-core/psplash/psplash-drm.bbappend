@@ -18,6 +18,7 @@ SRC_URI += " \
     file://cargt-logo-dark-200.png \
     file://cargt-psplash-drm-start \
     file://zz-cargt.conf \
+    file://cargt-psplash.conf \
 "
 
 # The theme can differ per machine and lands in /etc/default/psplash
@@ -39,6 +40,7 @@ do_install:append() {
     if ${@bb.utils.contains('DISTRO_FEATURES', 'systemd', 'true', 'false', d)}; then
         install -Dm 0644 ${WORKDIR}/zz-cargt.conf \
             ${D}${systemd_system_unitdir}/psplash-drm-start.service.d/zz-cargt.conf
+        install -Dm 0644 ${WORKDIR}/cargt-psplash.conf ${D}${nonarch_libdir}/tmpfiles.d/cargt-psplash.conf
     fi
 }
 
@@ -46,5 +48,6 @@ FILES:${PN} += " \
     ${libexecdir}/psplash \
     ${sysconfdir}/default/psplash \
     ${systemd_system_unitdir}/psplash-drm-start.service.d \
+    ${nonarch_libdir}/tmpfiles.d \
 "
 CONFFILES:${PN} += "${sysconfdir}/default/psplash"

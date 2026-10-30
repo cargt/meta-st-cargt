@@ -1,0 +1,21 @@
+#!/bin/sh
+# Start the Cargt boot splash as soon as the rootfs is mounted (about 5 s
+# into boot) instead of from systemd (about 12 s), with the rootfs's own
+# psplash-drm and start script, so the initramfs needs nothing extra.
+#
+# psplash-drm makes its FIFO at /tmp/splash_fifo. /tmp here is put on
+# /dev/psplash, and /dev moves into the rootfs at switch_root, so
+# psplash-drm-quit (Weston's start) still reaches it there through the
+# /tmp/splash_fifo link from tmpfiles.d/cargt-psplash.conf.
+
+splash_enabled() {
+	[ -x $ROOTFS_DIR/usr/libexec/psplash/cargt-psplash-drm-start ] && [ -e /dev/dri/card0 ]
+}
+
+splash_run() {
+	mkdir -p /dev/psplash
+	mount --bind /dev/psplash /tmp
+	echo "initramfs: starting the boot splash" > /dev/kmsg
+	CARGT_SPLASH_ROOT=$ROOTFS_DIR sh $ROOTFS_DIR/usr/libexec/psplash/cargt-psplash-drm-start \
+		</dev/null >/dev/null 2>&1 &
+}
