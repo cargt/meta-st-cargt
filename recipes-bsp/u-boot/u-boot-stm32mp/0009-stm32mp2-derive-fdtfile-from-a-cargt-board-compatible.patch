@@ -1,0 +1,46 @@
+From 66d23801919485490738b254cfc175c7da3e7023 Mon Sep 17 00:00:00 2001
+From: Tim Carney <tim.carney@cargt.com>
+Date: Thu, 29 Oct 2026 11:53:16 -0500
+Subject: [PATCH] stm32mp2: derive fdtfile from a "cargt," board compatible
+
+board_late_init() only derives fdtfile from the first compatible when
+it is "st,<name>". Cargt devicetrees use "cargt,<name>", so fdtfile
+came from the default environment, which names the board-wide
+devicetree. That default is also autosaved, so after a per-panel FIP
+was flashed, Linux still booted the board-wide devicetree without the
+panel.
+
+Treat "cargt,<name>" like "st,<name>": set board_name to <name> and
+fdtfile to <name>.dtb on every boot. The per-panel Cargt devicetrees
+use "cargt,<dtb basename>" as first compatible, so the running FIP now
+picks the kernel devicetree of the same name, overriding any saved
+fdtfile.
+---
+ board/st/stm32mp2/stm32mp2.c | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/board/st/stm32mp2/stm32mp2.c b/board/st/stm32mp2/stm32mp2.c
+index 8ea962ef10a9..57f171c3beb9 100644
+--- a/board/st/stm32mp2/stm32mp2.c
++++ b/board/st/stm32mp2/stm32mp2.c
+@@ -628,7 +628,19 @@ int board_late_init(void)
+ 		fdt_compat = fdt_getprop(gd->fdt_blob, 0, "compatible",
+ 					 &fdt_compat_len);
+ 		if (fdt_compat && fdt_compat_len) {
+-			if (strncmp(fdt_compat, "st,", 3) != 0) {
++			if (strncmp(fdt_compat, "cargt,", 6) == 0) {
++				/*
++				 * Cargt devicetrees use "cargt,<dtb basename>"
++				 * as first compatible, unique per panel
++				 * variant: always derive fdtfile from it so
++				 * Linux boots the devicetree matching this
++				 * FIP, whatever the saved environment says.
++				 */
++				env_set("board_name", fdt_compat + 6);
++				snprintf(dtb_name, sizeof(dtb_name), "%s.dtb",
++					 (const char *)fdt_compat + 6);
++				env_set("fdtfile", dtb_name);
++			} else if (strncmp(fdt_compat, "st,", 3) != 0) {
+ 				env_set("board_name", fdt_compat);
+ 			} else {
+ 				env_set("board_name", fdt_compat + 3);
