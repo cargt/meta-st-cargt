@@ -1,9 +1,10 @@
 # Patches the auto-generated eMMC and SD card flashlayout TSVs (fastboot,
 # optee, opteemin and fastboot-opteemin bootschemes, every devicetree
-# variant - the main CUBEMX_DTB one and the per-panel -glt* ones alike) to duplicate bootfs/vendorfs/rootfs into
-# A/B slots for RAUC OTA updates. Every variant must be patched: the machine
-# config's root=/dev/mmcblk1p10 (eMMC) / mmcblk0p12 (SD) and rauc.slot=A
-# apply to all of them, so a single-bank TSV flashes a board that won't boot.
+# variant - the main CUBEMX_DTB one and the per-panel -glt* ones alike) to
+# duplicate bootfs/vendorfs/rootfs into A/B slots for RAUC OTA updates.
+# Every variant must be patched: the machine config's root=/dev/mmcblk1p10
+# (eMMC) / mmcblk0p12 (SD) and rauc.slot=A apply to all of them, so a
+# single-bank TSV flashes a board that won't boot.
 #
 # ST's flashlayout-stm32mp.bbclass has no built-in concept of A/B
 # duplication for PARTITIONS_IMAGES-driven partitions (unlike fip-a/fip-b,
