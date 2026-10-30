@@ -108,4 +108,9 @@ DISTRO_EXTRA_RDEPENDS:append = " ${@bb.utils.contains('DISTRO_FEATURES', 'x11', 
 # INITRD addons to image
 DISTRO_EXTRA_RRECOMMENDS:append = " ${@bb.utils.contains('COMBINED_FEATURES', 'initrd', '${INITRD_PACKAGE}', '', d)} "
 
-PACKAGECONFIG:append:pn-networkmanager = " modemmanager ppp"
+# nmtui (NetworkManager's text UI, needs libnewt) is built so cargt-image-dev
+# can ship it. The networkmanager package RRECOMMENDS every enabled
+# sub-package, so drop nmtui from that list: other images keep nmcli only, and
+# an image that wants nmtui asks for networkmanager-nmtui by name.
+PACKAGECONFIG:append:pn-networkmanager = " modemmanager ppp nmtui"
+RRECOMMENDS:networkmanager:remove:pn-networkmanager = "networkmanager-nmtui"
