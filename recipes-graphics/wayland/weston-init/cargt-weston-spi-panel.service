@@ -1,0 +1,12 @@
+[Unit]
+Description=Pick the Weston configuration for the 00379 SPI display
+After=weston-checkgpu.service
+Before=weston-graphical-session.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/cargt-weston-spi-panel
+
+[Install]
+WantedBy=multi-user.target
