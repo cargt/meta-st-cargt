@@ -78,6 +78,11 @@ CORE_IMAGE_EXTRA_INSTALL += " \
     udev-extraconf \
     "
 
+# The 00365 machines leave out MACHINE_FEATURES "splashscreen", so the
+# "splash" image feature installs nothing there; add the Cargt boot splash
+# (psplash-drm.bbappend) directly.
+CORE_IMAGE_EXTRA_INSTALL += "${@bb.utils.contains('MACHINE_FEATURES', '00365', 'psplash-drm', '', d)}"
+
 # NOTE:
 #   packagegroup-st-demo are installed on rootfs to populate the package
 #   database.

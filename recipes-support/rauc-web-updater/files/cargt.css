@@ -1,0 +1,302 @@
+/* =========================================================
+   Cargt brand skin for the RAUC web updater
+   Brand guidelines: "Cargt Brand Guidelines_RD03", May 2026
+   Same palette and roles as the SWUpdate web UI in meta-imx-cargt
+   (recipes-support/swupdate/files/cargt-swupdate.css).
+   ========================================================= */
+
+@font-face {
+  font-family: "Manrope";
+  src: url("Manrope-Variable.woff2") format("woff2");
+  font-weight: 200 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root,
+[data-theme=light] {
+  --cargt-kaitoke-green: #004437;   /* primary */
+  --cargt-emerald: #00ac69;         /* secondary */
+  --cargt-electronic-mint: #39f2ae; /* secondary */
+  --cargt-circuit-green: #26ff91;   /* secondary */
+  --cargt-mid-gray: #9fa4aa;        /* neutral - decorative only */
+  --cargt-light-gray: #f7f9fa;      /* neutral */
+  --cargt-electric-blue: #2424ff;   /* accent - links */
+
+  /* Theme-dependent roles */
+  --cargt-heading: var(--cargt-kaitoke-green);
+  --cargt-accent: var(--cargt-emerald);
+  --cargt-card-bg: #fff;
+  --cargt-drop-bg: #fff;
+  --cargt-drop-hover: #e9faf3;
+  --cargt-nav-bg: var(--cargt-kaitoke-green);
+  --cargt-link: var(--cargt-electric-blue);
+  --cargt-body: #262b28;
+  --cargt-body-bg: var(--cargt-light-gray);
+  --cargt-muted: #5c6460;
+  --cargt-border: #dee2e6;
+  --cargt-ok-bg: #e6f7ef;
+  --cargt-ok-text: var(--cargt-kaitoke-green);
+  --cargt-fail-bg: #fdecec;
+  --cargt-fail-text: #a01c1c;
+  --cargt-fail-border: #d93636;
+  color-scheme: light;
+}
+
+[data-theme=dark] {
+  --cargt-heading: var(--cargt-electronic-mint);
+  --cargt-accent: var(--cargt-circuit-green);
+  --cargt-card-bg: #16241f;
+  --cargt-drop-bg: #12201b;
+  --cargt-drop-hover: #1d3a31;
+  --cargt-nav-bg: #002a22;
+  --cargt-link: #8f8fff;
+  --cargt-body: #e6ece9;
+  --cargt-body-bg: #0f1a17;
+  --cargt-muted: #a3b0ab;
+  --cargt-border: #2b3f38;
+  --cargt-ok-bg: #12291f;
+  --cargt-ok-text: var(--cargt-electronic-mint);
+  --cargt-fail-bg: #2c1717;
+  --cargt-fail-text: #ff8a8a;
+  --cargt-fail-border: #ff6b6b;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: var(--cargt-body-bg);
+  color: var(--cargt-body);
+  font-family: "Manrope", -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-weight: 450;
+  line-height: 1.5;
+}
+a {
+  color: var(--cargt-link);
+}
+
+/* ===== Layout ===== */
+.container {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+main.container {
+  padding-top: 1.5rem;
+}
+.card {
+  background: var(--cargt-card-bg);
+  border: 1px solid var(--cargt-border);
+  border-radius: .75rem;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .04), 0 2px 6px rgba(0, 0, 0, .05);
+  padding: 1rem 1.25rem 1.25rem;
+  margin-bottom: 1.5rem;
+}
+h1, h2 {
+  color: var(--cargt-heading);
+  font-weight: 700;
+}
+h1 {
+  font-size: 2.5rem;
+  letter-spacing: -.01em;
+  margin: 0 0 .25rem;
+}
+h2 {
+  font-size: 1.25rem;
+  margin: 0 0 .75rem;
+}
+.lead {
+  color: var(--cargt-accent);
+  font-weight: 600;
+  font-size: 1.1rem;
+  margin: 0 0 .25rem;
+}
+main > p:not(.lead) {
+  margin: 0 0 1.5rem;
+}
+
+/* ===== Navbar ===== */
+.cargt-nav {
+  background: var(--cargt-nav-bg);
+  padding: .75rem 0;
+}
+.cargt-nav .container {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.cargt-nav .brand img {
+  display: block;
+  height: 32px;
+  width: auto;
+}
+
+/* Light/dark toggle (theme defaults to dark; see cargt-theme.js) */
+#cargt-theme-toggle {
+  color: #fff;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, .6);
+  border-radius: .375rem;
+  padding: .35rem .5rem;
+  line-height: 0;
+  cursor: pointer;
+}
+#cargt-theme-toggle:hover,
+#cargt-theme-toggle:focus {
+  color: var(--cargt-electronic-mint);
+  border-color: var(--cargt-electronic-mint);
+}
+#cargt-theme-toggle svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+[data-theme=dark] #cargt-theme-toggle .icon-moon,
+[data-theme=light] #cargt-theme-toggle .icon-sun {
+  display: none;
+}
+
+/* ===== Dropzone, the main action ===== */
+#drop {
+  border: 2px dashed var(--cargt-emerald);
+  border-radius: .75rem;
+  background: var(--cargt-drop-bg);
+  min-height: 180px;
+  padding: 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--cargt-heading);
+  transition: background-color .15s, border-color .15s;
+}
+#drop:hover,
+#drop:focus-visible,
+#drop.over {
+  background: var(--cargt-drop-hover);
+  border-color: var(--cargt-kaitoke-green);
+  outline: none;
+}
+[data-theme=dark] #drop:hover,
+[data-theme=dark] #drop:focus-visible,
+[data-theme=dark] #drop.over {
+  border-color: var(--cargt-circuit-green);
+}
+#drop.busy {
+  cursor: progress;
+}
+#drop small {
+  display: block;
+  margin-top: .25rem;
+  font-weight: 450;
+  color: var(--cargt-muted);
+}
+.icon-upload {
+  display: block;
+  width: 2.5rem;
+  height: 2.5rem;
+  margin: 0 auto .5rem;
+  fill: var(--cargt-accent);
+}
+.spinner {
+  display: inline-block;
+  width: 1rem;
+  height: 1rem;
+  margin-right: .5rem;
+  vertical-align: -.125em;
+  border: .15em solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: cargt-spin .75s linear infinite;
+}
+@keyframes cargt-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ===== Status ===== */
+.alert {
+  margin-top: 1rem;
+  padding: .75rem 1rem;
+  border: 1px solid;
+  border-left-width: 4px;
+  border-radius: .375rem;
+}
+.alert.ok {
+  background: var(--cargt-ok-bg);
+  color: var(--cargt-ok-text);
+  border-color: var(--cargt-emerald);
+}
+.alert.fail {
+  background: var(--cargt-fail-bg);
+  color: var(--cargt-fail-text);
+  border-color: var(--cargt-fail-border);
+}
+.btn {
+  display: inline-block;
+  margin-left: .5rem;
+  padding: .3rem .8rem;
+  border-radius: .375rem;
+  background: var(--cargt-emerald);
+  color: #fff;
+  font-weight: 600;
+  text-decoration: none;
+}
+.btn:hover,
+.btn:focus {
+  background: var(--cargt-kaitoke-green);
+}
+[data-theme=dark] .btn {
+  background: var(--cargt-circuit-green);
+  color: var(--cargt-kaitoke-green);
+}
+[data-theme=dark] .btn:hover,
+[data-theme=dark] .btn:focus {
+  background: var(--cargt-electronic-mint);
+}
+
+/* ===== Install log ===== */
+#log {
+  margin: 0;
+  padding: 1rem;
+  font-family: ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace;
+  font-size: .8125rem;
+  line-height: 1.5;
+  background: #0f1a17;
+  color: #d7e3df;
+  max-height: 40vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-left: 4px solid var(--cargt-emerald);
+  border-radius: 0 .5rem .5rem 0;
+}
+
+/* ===== Footer ===== */
+.cargt-footer {
+  text-align: center;
+  font-size: .8125rem;
+  color: var(--cargt-muted);
+  padding: .5rem 0 2rem;
+}
+
+/* ===== Phone ===== */
+@media (max-width: 575.98px) {
+  .container {
+    padding-inline: 16px;
+  }
+  h1 {
+    font-size: 2rem;
+  }
+  #drop {
+    min-height: 140px;
+    padding: 1rem;
+  }
+  .cargt-nav .brand img {
+    height: 26px;
+  }
+}

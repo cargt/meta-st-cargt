@@ -27,35 +27,83 @@ BIND_PORT = 8080
 BUNDLE_DIR = "/usr/local/rauc-web-updater"
 BUNDLE_PATH = os.path.join(BUNDLE_DIR, "bundle.raucb")
 
-PAGE = """<!doctype html>
-<html>
+# Cargt branding (stylesheet, theme script, logo, favicon, font), installed
+# by the recipe. Only these names are served, so a request can't walk out
+# of the directory.
+STATIC_DIR = "/usr/share/rauc-web-updater"
+STATIC_FILES = {
+    "cargt.css": "text/css; charset=utf-8",
+    "cargt-theme.js": "text/javascript; charset=utf-8",
+    "cargt-logo.svg": "image/svg+xml",
+    "favicon.png": "image/png",
+    "Manrope-Variable.woff2": "font/woff2",
+}
+
+UPLOAD_ICON = (
+    '<svg class="icon-upload" viewBox="0 0 24 24" aria-hidden="true">'
+    '<path d="M12 3l5 5h-3v6h-4V8H7l5-5zM5 17h14v3H5z"/></svg>'
+)
+
+# Head and navbar shared by the page and the reboot notice. The theme
+# script comes before the stylesheet so the page never flashes light.
+HEADER = """<!doctype html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
-<title>RAUC Bundle Installer</title>
-<style>
-  body { font-family: sans-serif; max-width: 640px; margin: 3em auto; }
-  #drop { border: 3px dashed #888; border-radius: 8px; padding: 3em;
-          text-align: center; color: #555; }
-  #drop.over { border-color: #2a7; color: #2a7; }
-  pre { background: #111; color: #ddd; padding: 1em; overflow-x: auto;
-        white-space: pre-wrap; }
-  .ok { color: #2a7; font-weight: bold; }
-  .fail { color: #c33; font-weight: bold; }
-</style>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cargt Software Update</title>
+<link rel="icon" type="image/png" href="/static/favicon.png">
+<script src="/static/cargt-theme.js"></script>
+<link rel="stylesheet" href="/static/cargt.css">
 </head>
 <body>
-<h1>RAUC Bundle Installer</h1>
-<div id="drop">Drop a .raucb file here, or click to browse</div>
-<input type="file" id="file" accept=".raucb" style="display:none">
+<nav class="cargt-nav">
+  <div class="container">
+    <a class="brand" href="/"><img src="/static/cargt-logo.svg" alt="Cargt"></a>
+    <button id="cargt-theme-toggle" type="button" title="Switch between light and dark"
+            aria-label="Switch between light and dark theme">
+      <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.5"/><path d="M12 1.5v3M12 19.5v3M1.5 12h3M19.5 12h3M4.6 4.6l2.1 2.1M17.3 17.3l2.1 2.1M4.6 19.4l2.1-2.1M17.3 6.7l2.1-2.1" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></svg>
+    </button>
+  </div>
+</nav>
+<main class="container">
+"""
+
+FOOTER = """</main>
+<footer class="cargt-footer container">Cargt · Modern electronics. Confidence at every step.</footer>
+</body>
+</html>
+"""
+
+PAGE = HEADER + """<h1>Software Update</h1>
+<p class="lead">Install a new software image on this device.</p>
+<p>Upload a .raucb bundle below. RAUC installs it to the inactive slot; reboot afterwards to run it.</p>
+<section class="card">
+<h2>Install an update</h2>
+<div id="drop" role="button" tabindex="0">
+  <span id="drop-text">""" + UPLOAD_ICON + """Drop a .raucb file here, or click to choose one.<small>The install starts as soon as you drop the file.</small></span>
+</div>
+<input type="file" id="file" accept=".raucb" hidden>
 <div id="status"></div>
-<pre id="log" style="display:none"></pre>
+</section>
+<section class="card" id="log-card" hidden>
+<h2>Install log</h2>
+<pre id="log"></pre>
+</section>
 <script>
 const drop = document.getElementById('drop');
+const dropText = document.getElementById('drop-text');
+const idleText = dropText.innerHTML;
 const fileInput = document.getElementById('file');
 const status = document.getElementById('status');
 const log = document.getElementById('log');
+const logCard = document.getElementById('log-card');
 
 drop.addEventListener('click', () => fileInput.click());
+drop.addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); }
+});
 drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
 drop.addEventListener('dragleave', () => drop.classList.remove('over'));
 drop.addEventListener('drop', e => {
@@ -67,31 +115,42 @@ fileInput.addEventListener('change', () => {
   if (fileInput.files.length) upload(fileInput.files[0]);
 });
 
+function idle() {
+  drop.classList.remove('busy');
+  dropText.innerHTML = idleText;
+}
+
 function upload(file) {
-  drop.textContent = 'Installing ' + file.name + ' - this can take a few minutes...';
-  log.style.display = 'none';
+  drop.classList.add('busy');
+  dropText.innerHTML = '<span class="spinner"></span>';
+  dropText.append('Installing ' + file.name + ' - this can take a few minutes...');
+  logCard.hidden = true;
   status.textContent = '';
   const form = new FormData();
   form.append('bundle', file);
   fetch('/upload', { method: 'POST', body: form })
     .then(r => r.json())
     .then(data => {
-      drop.textContent = 'Drop a .raucb file here, or click to browse';
+      idle();
       status.innerHTML = data.ok
-        ? '<span class="ok">Install succeeded.</span> Reboot to switch to the new slot: <a href="/reboot">Reboot now</a>'
-        : '<span class="fail">Install failed.</span>';
+        ? '<div class="alert ok"><strong>Install succeeded.</strong> Reboot to switch to the new slot. <a class="btn" href="/reboot">Reboot now</a></div>'
+        : '<div class="alert fail"><strong>Install failed.</strong> See the install log below.</div>';
       log.textContent = data.log;
-      log.style.display = 'block';
+      logCard.hidden = false;
     })
     .catch(err => {
-      drop.textContent = 'Drop a .raucb file here, or click to browse';
-      status.innerHTML = '<span class="fail">Upload failed: ' + err + '</span>';
+      idle();
+      status.innerHTML = '<div class="alert fail"><strong>Upload failed:</strong> </div>';
+      status.firstChild.append(String(err));
     });
 }
 </script>
-</body>
-</html>
-"""
+""" + FOOTER
+
+REBOOT_PAGE = HEADER + """<h1>Rebooting</h1>
+<p class="lead">The device is restarting into the new slot.</p>
+<p>This page can be reloaded once the device is back on the network.</p>
+""" + FOOTER
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -100,11 +159,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/reboot":
-            self._send_html("<p>Rebooting now.</p>")
+            self._send_html(REBOOT_PAGE)
             subprocess.Popen(["reboot"])
             return
         if self.path == "/":
             self._send_html(PAGE)
+            return
+        if self.path.startswith("/static/"):
+            self._send_static(self.path[len("/static/"):])
             return
         self.send_error(404)
 
@@ -145,6 +207,24 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
         self.wfile.write(encoded)
+
+    def _send_static(self, name):
+        content_type = STATIC_FILES.get(name)
+        if content_type is None:
+            self.send_error(404)
+            return
+        try:
+            with open(os.path.join(STATIC_DIR, name), "rb") as f:
+                data = f.read()
+        except OSError:
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "max-age=3600")
+        self.end_headers()
+        self.wfile.write(data)
 
     @staticmethod
     def _extract_file_part(body, boundary):
