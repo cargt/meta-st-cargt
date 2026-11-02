@@ -1,0 +1,75 @@
+From: Tim Carney <tim.carney@cargt.com>
+Date: Thu, 29 Oct 2026 11:53:16 -0500
+Subject: [PATCH] stm32mp2: derive fdtfile from a "cargt," per-panel compatible
+
+board_late_init() only derives fdtfile from the first compatible when
+it is "st,<name>". Cargt devicetrees use "cargt,<name>", so fdtfile
+came from the default environment, which names the board-wide
+devicetree. After a per-panel FIP was flashed, Linux still booted the
+board-wide devicetree without the panel.
+
+Cargt per-panel devicetrees have "cargt,<dtb basename>" as first
+compatible and the board-wide "cargt,<board>" as second. When both are
+"cargt," and the name is an stm32mp2 DTB basename, set fdtfile to
+<name>.dtb on every boot, so the running panel FIP picks the kernel
+devicetree of the same name, overriding any saved fdtfile. On the
+board-wide devicetree fdtfile is left alone, so a saved fdtfile
+override keeps working there.
+
+For any "cargt,<name>" first compatible, board_name is now <name>.
+Before, it was the whole compatible, so on the board-wide devicetrees
+board_name loses its "cargt," prefix. Nothing in the stm32mp2 U-Boot
+environment reads board_name.
+
+fdtfile is set with env_set(), as the "st," path does. It reaches the
+saved environment only when something saves it, such as the bootcount
+store after a RAUC install. A saved value is the panel's own DTB and is
+overwritten on every boot from that FIP.
+
+Upstream-Status: Inappropriate [Cargt board specific]
+Signed-off-by: Tim Carney <tim.carney@cargt.com>
+---
+ board/st/stm32mp2/stm32mp2.c | 31 ++++++++++++++++++++++++++++++-
+ 1 file changed, 30 insertions(+), 1 deletion(-)
+
+diff --git a/board/st/stm32mp2/stm32mp2.c b/board/st/stm32mp2/stm32mp2.c
+--- a/board/st/stm32mp2/stm32mp2.c
++++ b/board/st/stm32mp2/stm32mp2.c
+@@ -628,7 +628,36 @@ int board_late_init(void)
+ 		fdt_compat = fdt_getprop(gd->fdt_blob, 0, "compatible",
+ 					 &fdt_compat_len);
+ 		if (fdt_compat && fdt_compat_len) {
+-			if (strncmp(fdt_compat, "st,", 3) != 0) {
++			if (strncmp(fdt_compat, "cargt,", 6) == 0) {
++				const char *name = fdt_compat + 6;
++				const char *fallback;
++
++				env_set("board_name", name);
++
++				/*
++				 * A Cargt per-panel devicetree has a first
++				 * compatible "cargt,<dtb basename>" and keeps
++				 * the board-wide "cargt,<board>" as second
++				 * compatible. Only then is this FIP tied to a
++				 * panel: force fdtfile to the matching kernel
++				 * devicetree, whatever the saved environment
++				 * says. On the board-wide devicetree, leave
++				 * fdtfile alone so a saved override still
++				 * works. The prefix check keeps a "cargt,"
++				 * name that isn't an stm32mp2 DTB basename
++				 * from producing a missing fdtfile.
++				 */
++				fallback = fdt_stringlist_get(gd->fdt_blob, 0,
++							      "compatible", 1,
++							      NULL);
++				if (strncmp(name, "stm32mp2", 8) == 0 &&
++				    fallback &&
++				    strncmp(fallback, "cargt,", 6) == 0) {
++					snprintf(dtb_name, sizeof(dtb_name),
++						 "%s.dtb", name);
++					env_set("fdtfile", dtb_name);
++				}
++			} else if (strncmp(fdt_compat, "st,", 3) != 0) {
+ 				env_set("board_name", fdt_compat);
+ 			} else {
+ 				env_set("board_name", fdt_compat + 3);

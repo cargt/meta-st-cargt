@@ -12,10 +12,12 @@ by hand every boot.
 
 Use a MACHINE-keyed SRC_URI:append instead (see the u-boot-stm32mp_%.bbappend
 change) so each board gets its own correctly-named default. This is
-the base devicetree with no LVDS panel variant selected; boards with a
-specific panel attached can still override fdtfile to one of the
-per-panel devicetrees (e.g. stm32mp257f-cargt-00395-02-00365-glt1011280800is1.dtb)
-as needed.
+the base devicetree with no LVDS panel variant selected. Boards flashed
+with a per-panel FlashLayout run a per-panel FIP, and patch 0009 sets
+fdtfile from its "cargt,<dtb basename>" compatible on every boot, so
+they need no override. On the board-wide FIP, a saved fdtfile override
+(e.g. stm32mp257f-cargt-00395-02-00365-glt1011280800is1.dtb) still
+applies.
 ---
 diff --git a/include/configs/stm32mp25_st_common.h b/include/configs/stm32mp25_st_common.h
 index ab5a4a91644..63887dfd6aa 100644
