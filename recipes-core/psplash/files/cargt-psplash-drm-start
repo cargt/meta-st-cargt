@@ -9,8 +9,18 @@
 
 root=$CARGT_SPLASH_ROOT
 
-# Already up from the initramfs
-[ -z "$root" ] && pidof psplash-drm >/dev/null && exit 0
+# Already up, or still starting, from the initramfs. That copy can still
+# be waiting for a connector (below) when systemd runs this, so it leaves
+# its PID in /dev/psplash, which survives switch_root; the PID stays the
+# same through the exec of psplash-drm.
+pidfile=/dev/psplash/start.pid
+if [ -n "$root" ]; then
+    echo $$ > $pidfile
+else
+    pidof psplash-drm >/dev/null && exit 0
+    pid=$(cat $pidfile 2>/dev/null)
+    [ -n "$pid" ] && grep -qs psplash /proc/$pid/cmdline && exit 0
+fi
 
 CARGT_SPLASH_THEME=light
 [ -r $root/etc/default/psplash ] && . $root/etc/default/psplash

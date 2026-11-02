@@ -70,7 +70,6 @@ CORE_IMAGE_EXTRA_INSTALL += " \
     packagegroup-core-buildessential \
     ${@bb.utils.contains('MACHINE_FEATURES', '00378', 'cc33xx-firmware','', d)} \
     ${@bb.utils.contains('MACHINE_FEATURES', '00395', 'kernel-module-nxp-wlan nxp-wlan-firmware-nxp-common nxp-wlan-firmware-nxpiw610-sdio','', d)} \
-    ${@bb.utils.contains('MACHINE_FEATURES', '00365', 'psplash-drm', '', d)} \
     ${@bb.utils.contains('COMBINED_FEATURES', 'rauc', 'rauc rauc-conf fwu-gen-metadata-v2 u-boot-tools-stm32mp cargt-device-symlinks','', d)} \
     ${@bb.utils.contains('COMBINED_FEATURES', 'rauc', 'rauc-hawkbit-updater','', d)} \
     ${@bb.utils.contains('COMBINED_FEATURES', 'rauc', 'rauc-web-updater','', d)} \
@@ -82,6 +81,7 @@ CORE_IMAGE_EXTRA_INSTALL += " \
 # The 00365 machines leave out MACHINE_FEATURES "splashscreen", so the
 # "splash" image feature installs nothing there; add the Cargt boot splash
 # (psplash-drm.bbappend) directly.
+CORE_IMAGE_EXTRA_INSTALL += "${@bb.utils.contains('MACHINE_FEATURES', '00365', 'psplash-drm', '', d)}"
 
 # NOTE:
 #   packagegroup-st-demo are installed on rootfs to populate the package
