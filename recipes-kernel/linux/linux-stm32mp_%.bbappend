@@ -98,6 +98,11 @@ SRC_URI += "file://${LINUX_VERSION}/0012-bluetooth-btnxpuart-stop-ps-timer-work-
 # correctness fix, not tied to any one board - see the patch.
 SRC_URI += "file://${LINUX_VERSION}/0013-serial-stm32-fix-pm_runtime-race-in-shutdown-vs-rx-dma.patch"
 
+# The 5.5" GLT0557201280IS1 panel (added by 0005) ran at 43.8 Hz from a
+# 50 MHz pixel clock; this raises it to 60 Hz on the same timing. Applies
+# on top of 0005, so it goes with the 00365 carrier like 0005 does.
+SRC_URI += "${@bb.utils.contains('MACHINE_FEATURES', '00365', 'file://${LINUX_VERSION}/0014-drm-panel-ili9881c-run-GLT0557201280IS1-at-60-Hz.patch', '', d)}"
+
 SRC_URI:class-devupstream += " file://${LINUX_VERSION}/cargt_00395_kernel_config_mods.config;subdir=fragments/features \
                                file://${LINUX_VERSION}/cargt_00378_kernel_config_mods.config;subdir=fragments/features \
                                file://${LINUX_VERSION}/cargt_00365_kernel_config_mods.config;subdir=fragments/features \

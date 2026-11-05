@@ -1,0 +1,27 @@
+From: Cargt <tim.carney@cargt.com>
+Subject: [PATCH] drm/panel: ili9881c: run GLT0557201280IS1 at 60 Hz
+
+The GLT0557201280IS1 mode used a 50 MHz pixel clock. With its 870 x 1312
+total timing that is 43.8 Hz, which caps every animation on the 5.5"
+panel at about 44 fps.
+
+Raise the clock to 68.486 MHz (870 x 1312 x 60), keeping the burst-mode
+DSI video and the wider vertical back porch the STM32MP25 needs for a
+stable image. Over the 4 DSI lanes at RGB888 that is about 411 Mbit/s per
+lane.
+
+Tested on an STM32MP257F 00395-01/00365: the mode reads 60 Hz, the image
+is stable, and a WebKit kiosk page went from 43 fps to about 56 fps.
+---
+--- a/drivers/gpu/drm/panel/panel-ilitek-ili9881c.c
++++ b/drivers/gpu/drm/panel/panel-ilitek-ili9881c.c
+@@ -1217,7 +1217,8 @@
+ };
+ 
+  static const struct drm_display_mode glt0557201280is1_default_mode = {
+-	 .clock		= 50000,
++	 /* 870 x 1312 total at 60 Hz (was 50000: 43.8 Hz) */
++	 .clock		= 68486,
+  
+ 	 .hdisplay	= 720,
+ 	 .hsync_start	= 720 + 60,
