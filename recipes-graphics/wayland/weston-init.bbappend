@@ -66,8 +66,8 @@ do_install:append() {
 
 # The 00379 SPI display can't use the GPU (GL renderer) and needs the small
 # logo: at boot, cargt-weston-spi-panel writes a pixman weston.ini to
-# /run/cargt-weston when it finds the display, and the user weston.service
-# drop-in points XDG_CONFIG_HOME there.
+# /run/cargt-weston when it finds the display, with an env file that the
+# user weston.service drop-in reads to point XDG_CONFIG_HOME there.
 do_install:append() {
     install -Dm 0755 ${WORKDIR}/cargt-weston-spi-panel ${D}${libexecdir}/cargt-weston-spi-panel
     install -Dm 0644 ${WORKDIR}/cargt-weston-spi-panel.service ${D}${systemd_system_unitdir}/cargt-weston-spi-panel.service
