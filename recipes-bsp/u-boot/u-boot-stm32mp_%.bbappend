@@ -16,3 +16,11 @@ SRC_URI += "file://0002-Autosave-env-when-defaults-are-set.patch \
 # devicetree instead of fdtfile being left unset.
 SRC_URI:append:stm32mp25-cargt-00395-01-00365 = " file://stm32mp25-cargt-00395-01-00365/0001-Add-fdtfile-definition-for-cargt-00395-01-00365.patch"
 SRC_URI:append:stm32mp25-cargt-00395-02-00365 = " file://stm32mp25-cargt-00395-02-00365/0001-Add-fdtfile-definition-for-cargt-00395-02-00365.patch"
+
+# Keyed autoboot: type "stop" within the boot delay to stop at the U-Boot
+# prompt, so console noise can't stop the boot. The 00393 carrier boards carry
+# their own stop string in their layer, so this one stays off them.
+SRC_URI += "file://fragment-cargt-autoboot.cfg"
+SRC_URI:remove:stm32mp25-cargt-00395-00393 = "file://fragment-cargt-autoboot.cfg"
+SRC_URI:remove:stm32mp25-cargt-00395-01-00393 = "file://fragment-cargt-autoboot.cfg"
+SRC_URI:remove:stm32mp25-cargt-00395-02-00393 = "file://fragment-cargt-autoboot.cfg"
